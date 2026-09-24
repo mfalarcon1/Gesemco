@@ -63,7 +63,7 @@ después haz lo mismo con `db/datos_prueba.sql`.
 
 ```
 db/esquema_gesemco.sql     El modelo: tablas, vistas, triggers y reglas de negocio
-db/datos_prueba.sql        Colegio de prueba: ejecución 2026 y formulación 2027
+db/datos_prueba.sql        Colegio Santa Úrsula con datos inventados: ejecución 2026 y formulación 2027
 db/pruebas.sql             35 pruebas de las reglas (deshacen todo al terminar)
 scripts/db.mjs             db:reset, db:test y db:pull, iguales en Windows y Linux
 src/db/schema.ts           Tipos de TypeScript, GENERADOS desde la base (no editar)

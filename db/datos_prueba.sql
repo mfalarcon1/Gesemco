@@ -1,13 +1,13 @@
 -- =====================================================================
 --  GESEMCO · Datos de prueba
 --
---  Un colegio piloto ficticio en septiembre de 2026: ejecutando el
+--  El Colegio Santa Úrsula en septiembre de 2026: ejecutando el
 --  presupuesto 2026 y formulando el 2027.
 --
 --  Los precios de tiendas reales son los que esas tiendas publicaban el
 --  24-09-2026. Los de la tienda "Precio de ejemplo" son ilustrativos.
---  Las personas, las compras y las facturas son inventadas.
---  Nada de esto va a producción.
+--  Las personas, los correos (dominio .test), los montos, las compras y
+--  las facturas son inventados. Nada de esto va a producción.
 --
 --  Requiere haber corrido db/esquema_gesemco.sql sobre una base vacía.
 --  Todo pasa por los triggers reales: si una regla se rompe, este
@@ -21,7 +21,7 @@ BEGIN;
 -- ---------------------------------------------------------------------
 
 INSERT INTO colegio (nombre, rbd, comuna)
-VALUES ('Colegio San Alberto', '12345-6', 'Puente Alto');
+VALUES ('Colegio Santa Úrsula', '00000-0', NULL);   -- RBD y comuna: completar con los reales
 
 INSERT INTO anio_presupuestario (colegio_id, anio, etapa, fecha_apertura) VALUES
     (1, 2026, 'ejecucion',   '2025-10-01'),   -- 1
@@ -43,26 +43,26 @@ INSERT INTO departamento (colegio_id, nombre, centro_costo) VALUES
     (1, 'Apoyo al aprendizaje',    'CC-APA');   -- 13
 
 INSERT INTO usuario (colegio_id, nombre, email) VALUES
-    (1, 'Marcela Ovalle',    'marcela.ovalle@gesemco.cl'),        --  1 contabilidad
-    (1, 'Andrés Bulnes',     'direccion@sanalberto.cl'),          --  2 dirección
-    (1, 'Tomás Ríos',        'compras@sanalberto.cl'),            --  3 equipo de compra
-    (1, 'Carolina Muñoz',    'carolina.munoz@sanalberto.cl'),     --  4 jefa Formación
-    (1, 'Rodrigo Tapia',     'rodrigo.tapia@sanalberto.cl'),      --  5 jefe Matemática
-    (1, 'Paula Sandoval',    'paula.sandoval@sanalberto.cl'),     --  6 jefa Física
-    (1, 'Javier Contreras',  'javier.contreras@sanalberto.cl'),   --  7 jefe Historia
-    (1, 'Daniela Fuentes',   'daniela.fuentes@sanalberto.cl'),    --  8 jefa Inglés
-    (1, 'Felipe Araya',      'felipe.araya@sanalberto.cl'),       --  9 jefe Lenguaje
-    (1, 'Verónica Soto',     'veronica.soto@sanalberto.cl'),      -- 10 jefa Biblioteca
-    (1, 'Luis Pizarro',      'luis.pizarro@sanalberto.cl'),       -- 11 jefe Reproducción de imagen
-    (1, 'Katrin Weber',      'katrin.weber@sanalberto.cl'),       -- 12 jefa Alemán
-    (1, 'Camila Rojas',      'camila.rojas@sanalberto.cl'),       -- 13 jefa Arte
-    (1, 'Sebastián Vidal',   'sebastian.vidal@sanalberto.cl'),    -- 14 jefe Ciencia
-    (1, 'Isabel Carrasco',   'isabel.carrasco@sanalberto.cl'),    -- 15 jefa Pastoral
-    (1, 'Gabriela Morales',  'gabriela.morales@sanalberto.cl'),   -- 16 jefa Apoyo al aprendizaje
-    (1, 'Ignacio Vera',      'ignacio.vera@sanalberto.cl'),       -- 17 profesor
-    (1, 'Francisca Leiva',   'francisca.leiva@sanalberto.cl'),    -- 18 profesora
-    (1, 'Martín Salinas',    'martin.salinas@sanalberto.cl'),     -- 19 profesor
-    (1, 'Josefa Riquelme',   'josefa.riquelme@sanalberto.cl');    -- 20 profesora
+    (1, 'Marcela Ovalle',    'marcela.ovalle@gesemco.test'),        --  1 contabilidad
+    (1, 'Andrés Bulnes',     'direccion@santaursula.test'),          --  2 dirección
+    (1, 'Tomás Ríos',        'compras@santaursula.test'),            --  3 equipo de compra
+    (1, 'Carolina Muñoz',    'carolina.munoz@santaursula.test'),     --  4 jefa Formación
+    (1, 'Rodrigo Tapia',     'rodrigo.tapia@santaursula.test'),      --  5 jefe Matemática
+    (1, 'Paula Sandoval',    'paula.sandoval@santaursula.test'),     --  6 jefa Física
+    (1, 'Javier Contreras',  'javier.contreras@santaursula.test'),   --  7 jefe Historia
+    (1, 'Daniela Fuentes',   'daniela.fuentes@santaursula.test'),    --  8 jefa Inglés
+    (1, 'Felipe Araya',      'felipe.araya@santaursula.test'),       --  9 jefe Lenguaje
+    (1, 'Verónica Soto',     'veronica.soto@santaursula.test'),      -- 10 jefa Biblioteca
+    (1, 'Luis Pizarro',      'luis.pizarro@santaursula.test'),       -- 11 jefe Reproducción de imagen
+    (1, 'Katrin Weber',      'katrin.weber@santaursula.test'),       -- 12 jefa Alemán
+    (1, 'Camila Rojas',      'camila.rojas@santaursula.test'),       -- 13 jefa Arte
+    (1, 'Sebastián Vidal',   'sebastian.vidal@santaursula.test'),    -- 14 jefe Ciencia
+    (1, 'Isabel Carrasco',   'isabel.carrasco@santaursula.test'),    -- 15 jefa Pastoral
+    (1, 'Gabriela Morales',  'gabriela.morales@santaursula.test'),   -- 16 jefa Apoyo al aprendizaje
+    (1, 'Ignacio Vera',      'ignacio.vera@santaursula.test'),       -- 17 profesor
+    (1, 'Francisca Leiva',   'francisca.leiva@santaursula.test'),    -- 18 profesora
+    (1, 'Martín Salinas',    'martin.salinas@santaursula.test'),     -- 19 profesor
+    (1, 'Josefa Riquelme',   'josefa.riquelme@santaursula.test');    -- 20 profesora
 
 INSERT INTO rol_asignado (usuario_id, rol, departamento_id) VALUES
     ( 1, 'contabilidad',      NULL),
