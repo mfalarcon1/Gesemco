@@ -17,8 +17,8 @@ reglas probadas; sus pantallas son lo siguiente.
 
 ## Requisitos
 
-- **Node.js 20 o superior**: `node --version` en PowerShell. Si no lo tienes, instálalo
-  desde nodejs.org (versión LTS).
+- **Node.js 20.12 o superior**: `node --version` en PowerShell. Si no lo tienes o es más
+  antiguo, instala la versión LTS desde nodejs.org.
 - **PostgreSQL 15 o superior** corriendo en local, con una base vacía llamada `gesemco`.
   En pgAdmin: clic derecho en Databases → Create → Database… → `gesemco`.
 

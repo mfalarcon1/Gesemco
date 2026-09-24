@@ -3,7 +3,8 @@ import { defineConfig } from 'drizzle-kit';
 
 // drizzle-kit no lee .env.local por su cuenta (Next sí). Así `npm run db:pull`
 // usa la misma DATABASE_URL que la app sin exportarla a mano.
-if (!process.env.DATABASE_URL && existsSync('.env.local')) {
+// process.loadEnvFile existe desde Node 20.12; en uno anterior, exporta DATABASE_URL a mano.
+if (!process.env.DATABASE_URL && existsSync('.env.local') && typeof process.loadEnvFile === 'function') {
   process.loadEnvFile('.env.local');
 }
 
