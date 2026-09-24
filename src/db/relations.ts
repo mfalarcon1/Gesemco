@@ -1,14 +1,56 @@
 import { relations } from "drizzle-orm/relations";
-import { colegio, anioPresupuestario, usuario, departamento, asignatura, rolAsignado, profesorAsignatura, presupuesto, movimientoPresupuesto, ordenCompra, proveedor, itemOrden, categoriaGasto, solicitudExcepcion, adjunto, recepcion, bitacora, folioContador } from "./schema";
+import { usuario, rolAsignado, departamento, colegio, anioPresupuestario, cuentaContable, categoriaArticulo, articulo, tienda, productoTienda, precioObservado, presupuestoDepartamento, programa, lineaPresupuesto, lineaCalendario, solicitudCompra, itemSolicitud, ordenCompra, itemOrden, pendientePedido, modificacionPresupuestaria, compra, recepcion, adjunto, notificacion, bitacora, folioContador } from "./schema";
+
+export const rolAsignadoRelations = relations(rolAsignado, ({one}) => ({
+	usuario: one(usuario, {
+		fields: [rolAsignado.usuarioId],
+		references: [usuario.id]
+	}),
+	departamento: one(departamento, {
+		fields: [rolAsignado.departamentoId],
+		references: [departamento.id]
+	}),
+}));
+
+export const usuarioRelations = relations(usuario, ({one, many}) => ({
+	rolAsignados: many(rolAsignado),
+	colegio: one(colegio, {
+		fields: [usuario.colegioId],
+		references: [colegio.id]
+	}),
+	presupuestoDepartamentos: many(presupuestoDepartamento),
+	programas: many(programa),
+	solicitudCompras_solicitanteId: many(solicitudCompra, {
+		relationName: "solicitudCompra_solicitanteId_usuario_id"
+	}),
+	solicitudCompras_resueltoPor: many(solicitudCompra, {
+		relationName: "solicitudCompra_resueltoPor_usuario_id"
+	}),
+	ordenCompras: many(ordenCompra),
+	pendientePedidos: many(pendientePedido),
+	modificacionPresupuestarias: many(modificacionPresupuestaria),
+	compras: many(compra),
+	recepcions: many(recepcion),
+	adjuntos: many(adjunto),
+	notificacions: many(notificacion),
+	bitacoras: many(bitacora),
+}));
+
+export const departamentoRelations = relations(departamento, ({one, many}) => ({
+	rolAsignados: many(rolAsignado),
+	colegio: one(colegio, {
+		fields: [departamento.colegioId],
+		references: [colegio.id]
+	}),
+	presupuestoDepartamentos: many(presupuestoDepartamento),
+}));
 
 export const anioPresupuestarioRelations = relations(anioPresupuestario, ({one, many}) => ({
 	colegio: one(colegio, {
 		fields: [anioPresupuestario.colegioId],
 		references: [colegio.id]
 	}),
-	profesorAsignaturas: many(profesorAsignatura),
-	presupuestos: many(presupuesto),
-	ordenCompras: many(ordenCompra),
+	presupuestoDepartamentos: many(presupuestoDepartamento),
 	folioContadors: many(folioContador),
 }));
 
@@ -18,181 +60,221 @@ export const colegioRelations = relations(colegio, ({many}) => ({
 	departamentos: many(departamento),
 }));
 
-export const usuarioRelations = relations(usuario, ({one, many}) => ({
-	colegio: one(colegio, {
-		fields: [usuario.colegioId],
-		references: [colegio.id]
+export const categoriaArticuloRelations = relations(categoriaArticulo, ({one, many}) => ({
+	cuentaContable: one(cuentaContable, {
+		fields: [categoriaArticulo.cuentaContableId],
+		references: [cuentaContable.id]
 	}),
-	departamentos: many(departamento),
-	rolAsignados: many(rolAsignado),
-	profesorAsignaturas: many(profesorAsignatura),
-	presupuestos: many(presupuesto),
-	movimientoPresupuestos: many(movimientoPresupuesto),
-	ordenCompras_solicitanteId: many(ordenCompra, {
-		relationName: "ordenCompra_solicitanteId_usuario_id"
-	}),
-	ordenCompras_aprobadorId: many(ordenCompra, {
-		relationName: "ordenCompra_aprobadorId_usuario_id"
-	}),
-	solicitudExcepcions: many(solicitudExcepcion),
-	adjuntos: many(adjunto),
-	recepcions: many(recepcion),
-	bitacoras: many(bitacora),
+	articulos: many(articulo),
 }));
 
-export const departamentoRelations = relations(departamento, ({one, many}) => ({
-	colegio: one(colegio, {
-		fields: [departamento.colegioId],
-		references: [colegio.id]
-	}),
-	usuario: one(usuario, {
-		fields: [departamento.jefeUsuarioId],
-		references: [usuario.id]
-	}),
-	asignaturas: many(asignatura),
+export const cuentaContableRelations = relations(cuentaContable, ({many}) => ({
+	categoriaArticulos: many(categoriaArticulo),
+	lineaPresupuestos: many(lineaPresupuesto),
+	itemOrdens: many(itemOrden),
 }));
 
-export const asignaturaRelations = relations(asignatura, ({one, many}) => ({
+export const articuloRelations = relations(articulo, ({one, many}) => ({
+	categoriaArticulo: one(categoriaArticulo, {
+		fields: [articulo.categoriaId],
+		references: [categoriaArticulo.id]
+	}),
+	productoTiendas: many(productoTienda),
+	lineaPresupuestos: many(lineaPresupuesto),
+	itemSolicituds: many(itemSolicitud),
+	itemOrdens: many(itemOrden),
+}));
+
+export const productoTiendaRelations = relations(productoTienda, ({one, many}) => ({
+	tienda: one(tienda, {
+		fields: [productoTienda.tiendaId],
+		references: [tienda.id]
+	}),
+	articulo: one(articulo, {
+		fields: [productoTienda.articuloId],
+		references: [articulo.id]
+	}),
+	precioObservados: many(precioObservado),
+}));
+
+export const tiendaRelations = relations(tienda, ({many}) => ({
+	productoTiendas: many(productoTienda),
+	compras: many(compra),
+}));
+
+export const precioObservadoRelations = relations(precioObservado, ({one}) => ({
+	productoTienda: one(productoTienda, {
+		fields: [precioObservado.productoTiendaId],
+		references: [productoTienda.id]
+	}),
+}));
+
+export const presupuestoDepartamentoRelations = relations(presupuestoDepartamento, ({one, many}) => ({
 	departamento: one(departamento, {
-		fields: [asignatura.departamentoId],
+		fields: [presupuestoDepartamento.departamentoId],
 		references: [departamento.id]
 	}),
-	profesorAsignaturas: many(profesorAsignatura),
-	presupuestos: many(presupuesto),
-	ordenCompras: many(ordenCompra),
-}));
-
-export const rolAsignadoRelations = relations(rolAsignado, ({one}) => ({
-	usuario: one(usuario, {
-		fields: [rolAsignado.usuarioId],
-		references: [usuario.id]
-	}),
-}));
-
-export const profesorAsignaturaRelations = relations(profesorAsignatura, ({one}) => ({
-	usuario: one(usuario, {
-		fields: [profesorAsignatura.usuarioId],
-		references: [usuario.id]
-	}),
-	asignatura: one(asignatura, {
-		fields: [profesorAsignatura.asignaturaId],
-		references: [asignatura.id]
-	}),
 	anioPresupuestario: one(anioPresupuestario, {
-		fields: [profesorAsignatura.anioId],
-		references: [anioPresupuestario.id]
-	}),
-}));
-
-export const presupuestoRelations = relations(presupuesto, ({one, many}) => ({
-	asignatura: one(asignatura, {
-		fields: [presupuesto.asignaturaId],
-		references: [asignatura.id]
-	}),
-	anioPresupuestario: one(anioPresupuestario, {
-		fields: [presupuesto.anioId],
+		fields: [presupuestoDepartamento.anioId],
 		references: [anioPresupuestario.id]
 	}),
 	usuario: one(usuario, {
-		fields: [presupuesto.asignadoPor],
+		fields: [presupuestoDepartamento.resueltoPor],
 		references: [usuario.id]
 	}),
-	movimientoPresupuestos_presupuestoOrigenId: many(movimientoPresupuesto, {
-		relationName: "movimientoPresupuesto_presupuestoOrigenId_presupuesto_id"
+	programas: many(programa),
+	solicitudCompras: many(solicitudCompra),
+	ordenCompras: many(ordenCompra),
+	modificacionPresupuestarias: many(modificacionPresupuestaria),
+}));
+
+export const programaRelations = relations(programa, ({one, many}) => ({
+	presupuestoDepartamento: one(presupuestoDepartamento, {
+		fields: [programa.presupuestoId],
+		references: [presupuestoDepartamento.id]
 	}),
-	movimientoPresupuestos_presupuestoDestinoId: many(movimientoPresupuesto, {
-		relationName: "movimientoPresupuesto_presupuestoDestinoId_presupuesto_id"
+	usuario: one(usuario, {
+		fields: [programa.creadoPor],
+		references: [usuario.id]
 	}),
+	lineaPresupuestos: many(lineaPresupuesto),
+}));
+
+export const lineaPresupuestoRelations = relations(lineaPresupuesto, ({one, many}) => ({
+	programa: one(programa, {
+		fields: [lineaPresupuesto.programaId],
+		references: [programa.id]
+	}),
+	articulo: one(articulo, {
+		fields: [lineaPresupuesto.articuloId],
+		references: [articulo.id]
+	}),
+	cuentaContable: one(cuentaContable, {
+		fields: [lineaPresupuesto.cuentaContableId],
+		references: [cuentaContable.id]
+	}),
+	lineaCalendarios: many(lineaCalendario),
+	itemSolicituds: many(itemSolicitud),
+	itemOrdens: many(itemOrden),
+}));
+
+export const lineaCalendarioRelations = relations(lineaCalendario, ({one}) => ({
+	lineaPresupuesto: one(lineaPresupuesto, {
+		fields: [lineaCalendario.lineaId],
+		references: [lineaPresupuesto.id]
+	}),
+}));
+
+export const solicitudCompraRelations = relations(solicitudCompra, ({one, many}) => ({
+	presupuestoDepartamento: one(presupuestoDepartamento, {
+		fields: [solicitudCompra.presupuestoId],
+		references: [presupuestoDepartamento.id]
+	}),
+	usuario_solicitanteId: one(usuario, {
+		fields: [solicitudCompra.solicitanteId],
+		references: [usuario.id],
+		relationName: "solicitudCompra_solicitanteId_usuario_id"
+	}),
+	usuario_resueltoPor: one(usuario, {
+		fields: [solicitudCompra.resueltoPor],
+		references: [usuario.id],
+		relationName: "solicitudCompra_resueltoPor_usuario_id"
+	}),
+	itemSolicituds: many(itemSolicitud),
 	ordenCompras: many(ordenCompra),
 }));
 
-export const movimientoPresupuestoRelations = relations(movimientoPresupuesto, ({one}) => ({
-	presupuesto_presupuestoOrigenId: one(presupuesto, {
-		fields: [movimientoPresupuesto.presupuestoOrigenId],
-		references: [presupuesto.id],
-		relationName: "movimientoPresupuesto_presupuestoOrigenId_presupuesto_id"
+export const itemSolicitudRelations = relations(itemSolicitud, ({one}) => ({
+	solicitudCompra: one(solicitudCompra, {
+		fields: [itemSolicitud.solicitudId],
+		references: [solicitudCompra.id]
 	}),
-	presupuesto_presupuestoDestinoId: one(presupuesto, {
-		fields: [movimientoPresupuesto.presupuestoDestinoId],
-		references: [presupuesto.id],
-		relationName: "movimientoPresupuesto_presupuestoDestinoId_presupuesto_id"
+	lineaPresupuesto: one(lineaPresupuesto, {
+		fields: [itemSolicitud.lineaId],
+		references: [lineaPresupuesto.id]
 	}),
-	usuario: one(usuario, {
-		fields: [movimientoPresupuesto.autorizadoPor],
-		references: [usuario.id]
+	articulo: one(articulo, {
+		fields: [itemSolicitud.articuloId],
+		references: [articulo.id]
 	}),
 }));
 
 export const ordenCompraRelations = relations(ordenCompra, ({one, many}) => ({
-	asignatura: one(asignatura, {
-		fields: [ordenCompra.asignaturaId],
-		references: [asignatura.id]
+	presupuestoDepartamento: one(presupuestoDepartamento, {
+		fields: [ordenCompra.presupuestoId],
+		references: [presupuestoDepartamento.id]
 	}),
-	anioPresupuestario: one(anioPresupuestario, {
-		fields: [ordenCompra.anioId],
-		references: [anioPresupuestario.id]
+	solicitudCompra: one(solicitudCompra, {
+		fields: [ordenCompra.solicitudId],
+		references: [solicitudCompra.id]
 	}),
-	usuario_solicitanteId: one(usuario, {
-		fields: [ordenCompra.solicitanteId],
-		references: [usuario.id],
-		relationName: "ordenCompra_solicitanteId_usuario_id"
-	}),
-	proveedor: one(proveedor, {
-		fields: [ordenCompra.proveedorId],
-		references: [proveedor.id]
-	}),
-	usuario_aprobadorId: one(usuario, {
-		fields: [ordenCompra.aprobadorId],
-		references: [usuario.id],
-		relationName: "ordenCompra_aprobadorId_usuario_id"
-	}),
-	presupuesto: one(presupuesto, {
-		fields: [ordenCompra.asignaturaId],
-		references: [presupuesto.asignaturaId]
+	usuario: one(usuario, {
+		fields: [ordenCompra.emitidaPor],
+		references: [usuario.id]
 	}),
 	itemOrdens: many(itemOrden),
-	solicitudExcepcions: many(solicitudExcepcion),
-	adjuntos: many(adjunto),
+	pendientePedidos: many(pendientePedido),
+	compras: many(compra),
 	recepcions: many(recepcion),
 }));
 
-export const proveedorRelations = relations(proveedor, ({many}) => ({
-	ordenCompras: many(ordenCompra),
-}));
-
 export const itemOrdenRelations = relations(itemOrden, ({one}) => ({
+	articulo: one(articulo, {
+		fields: [itemOrden.articuloId],
+		references: [articulo.id]
+	}),
+	cuentaContable: one(cuentaContable, {
+		fields: [itemOrden.cuentaContableId],
+		references: [cuentaContable.id]
+	}),
 	ordenCompra: one(ordenCompra, {
 		fields: [itemOrden.ordenId],
 		references: [ordenCompra.id]
 	}),
-	categoriaGasto: one(categoriaGasto, {
-		fields: [itemOrden.categoriaGastoId],
-		references: [categoriaGasto.id]
+	lineaPresupuesto: one(lineaPresupuesto, {
+		fields: [itemOrden.lineaId],
+		references: [lineaPresupuesto.id]
 	}),
 }));
 
-export const categoriaGastoRelations = relations(categoriaGasto, ({many}) => ({
-	itemOrdens: many(itemOrden),
-}));
-
-export const solicitudExcepcionRelations = relations(solicitudExcepcion, ({one}) => ({
+export const pendientePedidoRelations = relations(pendientePedido, ({one, many}) => ({
 	ordenCompra: one(ordenCompra, {
-		fields: [solicitudExcepcion.ordenId],
+		fields: [pendientePedido.ordenId],
 		references: [ordenCompra.id]
 	}),
 	usuario: one(usuario, {
-		fields: [solicitudExcepcion.resueltoPor],
+		fields: [pendientePedido.resueltoPor],
+		references: [usuario.id]
+	}),
+	modificacionPresupuestarias: many(modificacionPresupuestaria),
+}));
+
+export const modificacionPresupuestariaRelations = relations(modificacionPresupuestaria, ({one}) => ({
+	presupuestoDepartamento: one(presupuestoDepartamento, {
+		fields: [modificacionPresupuestaria.presupuestoId],
+		references: [presupuestoDepartamento.id]
+	}),
+	pendientePedido: one(pendientePedido, {
+		fields: [modificacionPresupuestaria.pendienteId],
+		references: [pendientePedido.id]
+	}),
+	usuario: one(usuario, {
+		fields: [modificacionPresupuestaria.autorizadoPor],
 		references: [usuario.id]
 	}),
 }));
 
-export const adjuntoRelations = relations(adjunto, ({one}) => ({
+export const compraRelations = relations(compra, ({one}) => ({
 	ordenCompra: one(ordenCompra, {
-		fields: [adjunto.ordenId],
+		fields: [compra.ordenId],
 		references: [ordenCompra.id]
 	}),
+	tienda: one(tienda, {
+		fields: [compra.tiendaId],
+		references: [tienda.id]
+	}),
 	usuario: one(usuario, {
-		fields: [adjunto.subidoPor],
+		fields: [compra.registradaPor],
 		references: [usuario.id]
 	}),
 }));
@@ -204,6 +286,20 @@ export const recepcionRelations = relations(recepcion, ({one}) => ({
 	}),
 	usuario: one(usuario, {
 		fields: [recepcion.recibidoPor],
+		references: [usuario.id]
+	}),
+}));
+
+export const adjuntoRelations = relations(adjunto, ({one}) => ({
+	usuario: one(usuario, {
+		fields: [adjunto.subidoPor],
+		references: [usuario.id]
+	}),
+}));
+
+export const notificacionRelations = relations(notificacion, ({one}) => ({
+	usuario: one(usuario, {
+		fields: [notificacion.usuarioId],
 		references: [usuario.id]
 	}),
 }));

@@ -19,6 +19,8 @@
   --color-bad: var(--bad);
   --color-bad-soft: var(--bad-soft);
   --color-track: var(--track);
+  --color-dato: var(--dato);
+  --color-dato-2: var(--dato-2);
 
   --font-display: 'Archivo', 'Segoe UI', ui-sans-serif, system-ui, sans-serif;
   --font-sans: 'IBM Plex Sans', 'Segoe UI', ui-sans-serif, system-ui, sans-serif;
@@ -44,6 +46,10 @@
   --bad: #a63f2e;
   --bad-soft: #f8e5e1;
   --track: #e4e9e8;
+  /* Gráficos: una rampa ordinal del acento, validada (ejecutado → comprometido).
+     No usar warn/bad para series: esos colores son de estado. */
+  --dato: #1d4e5f;
+  --dato-2: #5f93a3;
   color-scheme: light;
 }
 
@@ -67,6 +73,8 @@
     --bad: #e48a76;
     --bad-soft: #341e1a;
     --track: #243032;
+    --dato: #7ec0ce;
+    --dato-2: #3f7c8a;
     color-scheme: dark;
   }
 }

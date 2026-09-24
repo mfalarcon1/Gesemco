@@ -1,4 +1,11 @@
+import { existsSync } from 'node:fs';
 import { defineConfig } from 'drizzle-kit';
+
+// drizzle-kit no lee .env.local por su cuenta (Next sí). Así `npm run db:pull`
+// usa la misma DATABASE_URL que la app sin exportarla a mano.
+if (!process.env.DATABASE_URL && existsSync('.env.local')) {
+  process.loadEnvFile('.env.local');
+}
 
 /**
  * El archivo db/esquema_gesemco.sql es la fuente de verdad del modelo.

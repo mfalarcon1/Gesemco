@@ -1,47 +1,51 @@
 import { cookies } from 'next/headers';
-import { and, asc, eq, isNull, or, sql } from 'drizzle-orm';
-import {
-  db, usuario, rolAsignado, departamento, profesorAsignatura,
-  anioPresupuestario, colegio,
-} from '@/db';
+import { and, asc, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { db, usuario, rolAsignado, departamento, anioPresupuestario, colegio } from '@/db';
 
 export const COOKIE_USUARIO = 'gesemco_usuario';
 
 export type Rol =
-  | 'administrador' | 'contabilidad' | 'direccion'
-  | 'jefe_departamento' | 'profesor';
+  | 'administrador' | 'direccion' | 'contabilidad'
+  | 'equipo_compra' | 'jefe_departamento' | 'profesor';
 
-/**
- * Qué parte del colegio puede ver el usuario. Sale de rol_asignado, que
- * guarda el par rol + ámbito, así que un jefe de departamento que además
- * hace clases queda resuelto sin duplicar la persona.
- */
-export type Alcance =
-  | { tipo: 'asignaturas'; asignaturaIds: number[] }
-  | { tipo: 'departamento'; departamentoId: number; nombre: string }
-  | { tipo: 'colegio'; colegioId: number; nombre: string };
+export type Departamento = { id: number; nombre: string };
+export type Anio = { id: number; anio: number };
 
 export type Sesion = {
   usuario: { id: number; nombre: string; email: string; colegioId: number };
+  colegio: { id: number; nombre: string };
+  /** El rol de mayor alcance: define la etiqueta y la portada. */
   rol: Rol;
   etiquetaRol: string;
-  alcance: Alcance;
-  anio: { id: number; anio: number; estado: 'abierto' | 'cerrado' };
-  colegio: { id: number; nombre: string };
+  /** Todos los roles vigentes. Un jefe puede además hacer clases en otro departamento. */
+  roles: Rol[];
+  jefeDe: Departamento | null;
+  profesorEn: Departamento[];
+  /** Dirección, contabilidad, equipo de compra y administrador ven el colegio completo. */
+  veTodoElColegio: boolean;
+  /** El año que se está formulando (etapa 1) y el que se está ejecutando (etapa 2). */
+  anioFormulacion: Anio | null;
+  anioEjecucion: Anio | null;
 };
 
-// Quien tiene varios roles opera con el de mayor alcance.
 const PRECEDENCIA: Rol[] = [
-  'administrador', 'contabilidad', 'direccion', 'jefe_departamento', 'profesor',
+  'administrador', 'direccion', 'contabilidad', 'equipo_compra', 'jefe_departamento', 'profesor',
 ];
 
-const ETIQUETA: Record<Rol, string> = {
+const DE_COLEGIO: Rol[] = ['administrador', 'direccion', 'contabilidad', 'equipo_compra'];
+
+export const ETIQUETA_ROL: Record<Rol, string> = {
   administrador: 'Administrador del sistema',
-  contabilidad: 'Contabilidad GESEMCO',
   direccion: 'Dirección del colegio',
+  contabilidad: 'Contabilidad GESEMCO',
+  equipo_compra: 'Equipo de compra',
   jefe_departamento: 'Jefatura de departamento',
   profesor: 'Profesor',
 };
+
+// La fecha la pone la base: un servidor que lleva días corriendo no
+// debe arrastrar la fecha del día en que partió.
+const vigente = or(isNull(rolAsignado.hasta), sql`${rolAsignado.hasta} >= CURRENT_DATE`);
 
 /** Para el selector de usuario mientras no hay autenticación real. */
 export async function usuariosDisponibles() {
@@ -49,43 +53,43 @@ export async function usuariosDisponibles() {
     .select({
       id: usuario.id,
       nombre: usuario.nombre,
-      email: usuario.email,
       rol: rolAsignado.rol,
+      departamento: departamento.nombre,
     })
     .from(usuario)
-    .leftJoin(rolAsignado, eq(rolAsignado.usuarioId, usuario.id))
+    .leftJoin(rolAsignado, and(eq(rolAsignado.usuarioId, usuario.id), vigente))
+    .leftJoin(departamento, eq(departamento.id, rolAsignado.departamentoId))
     .where(eq(usuario.activo, true))
     .orderBy(asc(usuario.id));
 
-  // Un usuario puede tener varios roles, así que la consulta devuelve una
-  // fila por rol. Los agrupamos y nos quedamos con el de mayor alcance.
-  const agrupado = new Map<number, { id: number; nombre: string; email: string; roles: Rol[] }>();
+  const agrupado = new Map<number, { id: number; nombre: string; roles: { rol: Rol; departamento: string | null }[] }>();
   for (const f of filas) {
-    const u = agrupado.get(f.id) ?? { id: f.id, nombre: f.nombre, email: f.email, roles: [] };
-    if (f.rol) u.roles.push(f.rol as Rol);
+    const u = agrupado.get(f.id) ?? { id: f.id, nombre: f.nombre, roles: [] };
+    if (f.rol) u.roles.push({ rol: f.rol, departamento: f.departamento });
     agrupado.set(f.id, u);
   }
 
-  return [...agrupado.values()].map((u) => ({
-    id: u.id,
-    nombre: u.nombre,
-    email: u.email,
-    rol: PRECEDENCIA.find((r) => u.roles.includes(r)) ?? null,
-  }));
+  return [...agrupado.values()].map((u) => {
+    const rol = PRECEDENCIA.find((r) => u.roles.some((x) => x.rol === r)) ?? null;
+    const departamentos = u.roles.filter((x) => x.rol === rol && x.departamento).map((x) => x.departamento!);
+    return {
+      id: u.id,
+      nombre: u.nombre,
+      rol,
+      departamento: departamentos.length ? departamentos.join(' y ') : null,
+    };
+  });
 }
 
 export async function getSesion(): Promise<Sesion | null> {
   const store = await cookies();
   const guardado = Number(store.get(COOKIE_USUARIO)?.value);
 
-  // Sin cookie válida entra el primer usuario activo. Es deliberado: este
-  // selector reemplaza al login mientras construimos la Fase 1, y se cambia
-  // por Auth.js sin tocar nada de lo que viene más abajo.
+  // Sin cookie válida entra el primer usuario activo. Es deliberado: el
+  // selector reemplaza al login mientras construimos, y se cambia por
+  // Auth.js sin tocar nada de lo que viene más abajo.
   const [quien] = await db
-    .select({
-      id: usuario.id, nombre: usuario.nombre,
-      email: usuario.email, colegioId: usuario.colegioId,
-    })
+    .select({ id: usuario.id, nombre: usuario.nombre, email: usuario.email, colegioId: usuario.colegioId })
     .from(usuario)
     .where(
       Number.isInteger(guardado) && guardado > 0
@@ -97,74 +101,75 @@ export async function getSesion(): Promise<Sesion | null> {
 
   if (!quien) return null;
 
-  const roles = await db
-    .select({ rol: rolAsignado.rol, ambitoTipo: rolAsignado.ambitoTipo, ambitoId: rolAsignado.ambitoId })
-    .from(rolAsignado)
-    .where(and(
-      eq(rolAsignado.usuarioId, quien.id),
-      or(isNull(rolAsignado.hasta), sql`${rolAsignado.hasta} >= CURRENT_DATE`),
-    ));
-
-  const rol = PRECEDENCIA.find((r) => roles.some((x) => x.rol === r)) ?? 'profesor';
-
   const [establecimiento] = await db
     .select({ id: colegio.id, nombre: colegio.nombre })
     .from(colegio)
     .where(eq(colegio.id, quien.colegioId));
 
-  const [periodo] = await db
-    .select({ id: anioPresupuestario.id, anio: anioPresupuestario.anio, estado: anioPresupuestario.estado })
+  if (!establecimiento) return null;
+
+  const asignaciones = await db
+    .select({ rol: rolAsignado.rol, departamentoId: departamento.id, departamento: departamento.nombre })
+    .from(rolAsignado)
+    .leftJoin(departamento, eq(departamento.id, rolAsignado.departamentoId))
+    .where(and(eq(rolAsignado.usuarioId, quien.id), vigente));
+
+  const roles = [...new Set(asignaciones.map((a) => a.rol))];
+  const rol = PRECEDENCIA.find((r) => roles.includes(r)) ?? 'profesor';
+
+  const jefatura = asignaciones.find((a) => a.rol === 'jefe_departamento' && a.departamentoId);
+  const clases = asignaciones.filter((a) => a.rol === 'profesor' && a.departamentoId);
+
+  const anios = await db
+    .select({ id: anioPresupuestario.id, anio: anioPresupuestario.anio, etapa: anioPresupuestario.etapa })
     .from(anioPresupuestario)
     .where(and(
       eq(anioPresupuestario.colegioId, quien.colegioId),
-      eq(anioPresupuestario.estado, 'abierto'),
+      inArray(anioPresupuestario.etapa, ['formulacion', 'ejecucion']),
     ))
-    .orderBy(asc(anioPresupuestario.anio))
-    .limit(1);
+    .orderBy(desc(anioPresupuestario.anio));
 
-  if (!establecimiento || !periodo) return null;
-
-  const alcance = await resolverAlcance(rol, quien, roles, periodo.id, establecimiento);
+  const buscarAnio = (etapa: 'formulacion' | 'ejecucion') => {
+    const a = anios.find((x) => x.etapa === etapa);
+    return a ? { id: a.id, anio: a.anio } : null;
+  };
 
   return {
     usuario: quien,
-    rol,
-    etiquetaRol: ETIQUETA[rol],
-    alcance,
-    anio: { id: periodo.id, anio: periodo.anio, estado: periodo.estado },
     colegio: establecimiento,
+    rol,
+    etiquetaRol: ETIQUETA_ROL[rol],
+    roles,
+    jefeDe: jefatura ? { id: jefatura.departamentoId!, nombre: jefatura.departamento! } : null,
+    profesorEn: clases.map((c) => ({ id: c.departamentoId!, nombre: c.departamento! })),
+    veTodoElColegio: roles.some((r) => DE_COLEGIO.includes(r)),
+    anioFormulacion: buscarAnio('formulacion'),
+    anioEjecucion: buscarAnio('ejecucion'),
   };
 }
 
-async function resolverAlcance(
-  rol: Rol,
-  quien: { id: number; colegioId: number },
-  roles: { rol: string; ambitoTipo: string; ambitoId: number }[],
-  anioId: number,
-  establecimiento: { id: number; nombre: string },
-): Promise<Alcance> {
-  if (rol === 'jefe_departamento') {
-    const ambito = roles.find((r) => r.rol === 'jefe_departamento' && r.ambitoTipo === 'departamento');
-    if (ambito) {
-      const [d] = await db
-        .select({ nombre: departamento.nombre })
-        .from(departamento)
-        .where(eq(departamento.id, ambito.ambitoId));
-      return { tipo: 'departamento', departamentoId: ambito.ambitoId, nombre: d?.nombre ?? 'Departamento' };
-    }
-  }
+// ---------------------------------------------------------------------
+// Permisos. Se consultan en las páginas (qué mostrar) y se vuelven a
+// exigir en las acciones del servidor (qué se puede hacer). Las reglas de
+// estado (qué se puede editar y cuándo) las garantiza la base.
+// ---------------------------------------------------------------------
 
-  if (rol === 'profesor') {
-    // Las asignaturas que dicta este año, no las de su historia completa.
-    const filas = await db
-      .select({ asignaturaId: profesorAsignatura.asignaturaId })
-      .from(profesorAsignatura)
-      .where(and(
-        eq(profesorAsignatura.usuarioId, quien.id),
-        eq(profesorAsignatura.anioId, anioId),
-      ));
-    return { tipo: 'asignaturas', asignaturaIds: filas.map((f) => f.asignaturaId) };
-  }
+const tiene = (s: Sesion, ...roles: Rol[]) => s.roles.some((r) => roles.includes(r));
 
-  return { tipo: 'colegio', colegioId: establecimiento.id, nombre: establecimiento.nombre };
-}
+export const esAdministrador = (s: Sesion) => tiene(s, 'administrador');
+export const esDireccion = (s: Sesion) => tiene(s, 'direccion', 'administrador');
+export const esContabilidad = (s: Sesion) => tiene(s, 'contabilidad', 'administrador');
+
+/** Formula el presupuesto del departamento: solo su jefe. */
+export const esJefeDe = (s: Sesion, departamentoId: number) =>
+  s.jefeDe?.id === departamentoId || esAdministrador(s);
+
+export const puedeVerDepartamento = (s: Sesion, departamentoId: number) =>
+  s.veTodoElColegio || s.jefeDe?.id === departamentoId || s.profesorEn.some((d) => d.id === departamentoId);
+
+/** La etapa 1 la viven los jefes, Dirección y contabilidad. */
+export const participaEnFormulacion = (s: Sesion) =>
+  s.jefeDe !== null || tiene(s, 'direccion', 'contabilidad', 'administrador');
+
+/** La proyección mensual es para GESEMCO y Dirección. */
+export const veProyeccion = (s: Sesion) => tiene(s, 'direccion', 'contabilidad', 'administrador');

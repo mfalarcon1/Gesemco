@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# drizzle-kit pull escribe acá antes de copiar los tipos a src/db
+/db/drizzle/
+
+# la plantilla de variables sí va al repositorio
+!.env.example

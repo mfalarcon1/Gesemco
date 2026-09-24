@@ -3,15 +3,22 @@
 import { useRef } from 'react';
 import { cambiarUsuario } from '@/app/actions';
 
-type Opcion = { id: number; nombre: string; rol: string | null };
+type Opcion = { id: number; nombre: string; rol: string | null; departamento: string | null };
 
 const ETIQUETA: Record<string, string> = {
   administrador: 'administrador',
+  direccion: 'Dirección',
   contabilidad: 'contabilidad',
-  direccion: 'dirección',
-  jefe_departamento: 'jefe de depto.',
+  equipo_compra: 'equipo de compra',
+  jefe_departamento: 'jefe',
   profesor: 'profesor',
 };
+
+function detalle(u: Opcion) {
+  if (!u.rol) return '';
+  const rol = ETIQUETA[u.rol] ?? u.rol;
+  return u.departamento ? ` — ${rol} ${u.departamento}` : ` — ${rol}`;
+}
 
 export function SelectorUsuario({ usuarios, actual }: { usuarios: Opcion[]; actual: number }) {
   const form = useRef<HTMLFormElement>(null);
@@ -26,13 +33,12 @@ export function SelectorUsuario({ usuarios, actual }: { usuarios: Opcion[]; actu
         name="usuarioId"
         defaultValue={actual}
         onChange={() => form.current?.requestSubmit()}
-        className="rounded-lg border border-line-strong bg-surface-2 px-3 py-1.5 text-sm text-ink
+        className="max-w-[16rem] rounded-lg border border-line-strong bg-surface-2 px-3 py-1.5 text-sm text-ink
                    focus:outline-2 focus:outline-accent focus:-outline-offset-1"
       >
         {usuarios.map((u) => (
           <option key={u.id} value={u.id}>
-            {u.nombre}
-            {u.rol ? ` — ${ETIQUETA[u.rol] ?? u.rol}` : ''}
+            {u.nombre}{detalle(u)}
           </option>
         ))}
       </select>
