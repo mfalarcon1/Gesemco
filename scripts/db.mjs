@@ -13,6 +13,11 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import pg from 'pg';
 
+if (typeof process.loadEnvFile !== 'function') {
+  console.error(`Necesitas Node.js 20.12 o superior (tienes ${process.version}). Instala la versión LTS desde nodejs.org.`);
+  process.exit(1);
+}
+
 if (!process.env.DATABASE_URL && existsSync('.env.local')) {
   process.loadEnvFile('.env.local');
 }
