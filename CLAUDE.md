@@ -37,8 +37,9 @@ mientras se formula el siguiente (la sesión trae `anioFormulacion` y `anioEjecu
   vigentes, congelado en la línea) o líneas libres (fuera de catálogo).
 - `presupuesto_departamento`: borrador → enviado → aprobado | devuelto → enviado. El jefe
   puede retirar un envío. La negociación con Dirección es en reunión, fuera del sistema.
-- Aprobar congela `monto_aprobado`. Después el jefe reparte cada línea en meses
-  (`linea_calendario`) → proyección mensual para GESEMCO. Informativa: no bloquea compras.
+- Aprobar congela `monto_aprobado`. Después el jefe escribe cuántas unidades de cada línea
+  necesita en cada mes (`linea_calendario`; la cantidad es libre y puede quedar a medias)
+  → proyección mensual para GESEMCO. Informativa: no bloquea compras.
 
 **Etapa 2 — ejecución (en la base, sin pantallas todavía)**
 - Profesor → `solicitud_compra` → jefe emite `orden_compra` → `equipo_compra` compra

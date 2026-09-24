@@ -1108,7 +1108,7 @@ BEGIN
     ELSIF NEW.estado = 'aprobado' THEN
         PERFORM fn_notificar_rol(v_colegio, 'jefe_departamento', NEW.departamento_id,
             'Dirección aprobó el presupuesto ' || v_anio || ' de ' || v_depto,
-            'Ahora asigna a cada línea el mes en que la necesitas.', v_enlace);
+            'Ahora indica cuántas unidades de cada línea necesitas en cada mes.', v_enlace);
     ELSIF NEW.estado = 'devuelto' THEN
         PERFORM fn_notificar_rol(v_colegio, 'jefe_departamento', NEW.departamento_id,
             'Dirección devolvió el presupuesto ' || v_anio || ' de ' || v_depto,

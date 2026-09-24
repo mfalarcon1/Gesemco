@@ -6,8 +6,8 @@ dos etapas:
 1. **Formulación.** Cada jefe de departamento arma los programas que hará el próximo
    año, con los artículos que necesita (desde un catálogo con precios de tiendas) o con
    líneas libres para servicios. Dirección aprueba o devuelve cada presupuesto, y con el
-   presupuesto aprobado el jefe asigna los meses: así GESEMCO recibe cuánta caja se
-   necesita cada mes.
+   presupuesto aprobado el jefe indica cuántas unidades de cada línea necesita en cada
+   mes: así GESEMCO recibe cuánta caja se necesita cada mes.
 2. **Ejecución.** El profesor solicita, el jefe emite la orden de compra y el equipo de
    compra compra. El saldo se controla contra el total anual del departamento, a precio
    presupuesto. Lo que no cabe queda como pendiente de pedido para Dirección.

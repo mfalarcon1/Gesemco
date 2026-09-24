@@ -5,6 +5,7 @@ import { Aviso, leerAviso } from '@/components/aviso';
 import { EstadoPresupuestoPildora, FueraDeCatalogo } from '@/components/pildoras';
 import { TarjetaCifra } from '@/components/tarjeta-cifra';
 import { ColumnasMensuales } from '@/components/columnas-mensuales';
+import { RepartoMeses } from '@/components/reparto-meses';
 import { IconoAlerta, IconoOk, IconoReloj } from '@/components/iconos';
 import { boton, campo, etiqueta, tarjeta, td, tdNum, th, titulo } from '@/components/ui';
 import { esDireccion, esJefeDe, getSesion, participaEnFormulacion } from '@/lib/sesion';
@@ -12,9 +13,9 @@ import {
   cuentasContables, esEditable, programasConLineas, proyeccionPresupuesto, resumenDepartamento,
   type Linea, type ProgramaConLineas, type Proyeccion, type ResumenPresupuesto,
 } from '@/lib/formulacion';
-import { fecha, MESES, MESES_CORTOS, money, repartoCorto } from '@/lib/formato';
+import { fecha, MESES, money, repartoCorto } from '@/lib/formato';
 import {
-  agregarLineaLibre, aprobarPresupuesto, asignarMeses, crearPrograma, devolverPresupuesto,
+  agregarLineaLibre, aprobarPresupuesto, crearPrograma, devolverPresupuesto,
   editarLinea, eliminarLinea, eliminarPrograma, enviarADireccion, retirarEnvio,
 } from '../acciones';
 
@@ -242,7 +243,7 @@ function PanelEstado({
           </p>
           <p className="mt-1 text-ink-2">
             {soyJefe
-              ? 'Ahora asigna a cada línea el mes en que la necesitas (columna Meses). Eso arma la proyección mensual que recibe GESEMCO.'
+              ? 'Ahora indica cuántas unidades de cada línea necesitas en cada mes (columna Meses). Eso arma la proyección mensual que recibe GESEMCO.'
               : 'El jefe asigna los meses de cada línea; con eso se arma la proyección mensual para GESEMCO.'}
           </p>
           {resumen.modificaciones !== 0 && (
@@ -433,8 +434,6 @@ function FilaLinea({
 function MesesDeLinea({
   linea: l, departamentoId, calendarizable,
 }: { linea: Linea; departamentoId: number; calendarizable: boolean }) {
-  const marcados = new Set(l.meses.map((m) => m.mes));
-
   return (
     <div className="text-xs">
       {l.meses.length > 0 ? (
@@ -444,32 +443,17 @@ function MesesDeLinea({
       )}
       {l.meses.length > 0 && l.cantidadSinMes > 0 && (
         <p className="mt-0.5 flex items-center gap-1 text-warn">
-          <IconoAlerta className="size-3.5" />Faltan {l.cantidadSinMes} sin mes
+          <IconoAlerta className="size-3.5" />{l.cantidadSinMes === 1 ? 'Falta 1 sin mes' : `Faltan ${l.cantidadSinMes} sin mes`}
         </p>
       )}
 
       {calendarizable && (
         <details className="mt-1.5">
           <summary className="cursor-pointer text-accent">{l.meses.length ? 'Cambiar meses' : 'Asignar meses'}</summary>
-          <form action={asignarMeses} className="mt-2">
-            <input type="hidden" name="departamentoId" value={departamentoId} />
-            <input type="hidden" name="lineaId" value={l.id} />
-            <fieldset>
-              <legend className="mb-1.5 text-ink-2">
-                Marca los meses: las {l.cantidad} unidades se reparten en partes iguales.
-              </legend>
-              <div className="grid grid-cols-4 gap-1">
-                {MESES_CORTOS.map((m, i) => (
-                  <label key={m} className="flex cursor-pointer items-center gap-1 rounded border border-line px-1.5 py-1 has-[:checked]:border-accent has-[:checked]:bg-accent-soft">
-                    <input type="checkbox" name="mes" value={i + 1} defaultChecked={marcados.has(i + 1)}
-                      className="accent-[var(--accent)]" />
-                    {m}
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-            <button className={`${boton.chico} mt-2 bg-accent text-paper hover:opacity-90`}>Repartir</button>
-          </form>
+          {/* La key vuelve a montar el editor cuando cambia lo guardado (por ejemplo, si bajar la
+              cantidad reinició los meses), para que no muestre lo que se había escrito antes. */}
+          <RepartoMeses key={`${l.cantidad}|${repartoCorto(l.meses)}`}
+            lineaId={l.id} departamentoId={departamentoId} cantidad={l.cantidad} meses={l.meses} />
         </details>
       )}
     </div>

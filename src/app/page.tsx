@@ -102,7 +102,7 @@ function MiFormulacion({
     borrador: 'Sigue armando tus programas y envíalo a Dirección cuando esté listo.',
     enviado: 'Dirección lo está revisando. Te llegará un aviso cuando lo resuelva.',
     devuelto: 'Dirección lo devolvió con comentarios: ajústalo y vuelve a enviarlo.',
-    aprobado: 'Está aprobado. Asigna a cada línea el mes en que la necesitas.',
+    aprobado: 'Está aprobado. Indica cuántas unidades de cada línea necesitas en cada mes.',
   };
 
   return (

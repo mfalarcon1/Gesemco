@@ -278,10 +278,21 @@ export async function devolverPresupuesto(form: FormData) {
 // Meses: el jefe reparte cada línea en los meses en que la necesita
 // ---------------------------------------------------------------------
 
+/** Cantidad de un mes en el formulario: vacío es 0; si no, un entero de 0 en adelante. */
+function cantidadDelMes(form: FormData, campo: string): number {
+  const crudo = String(form.get(campo) ?? '').trim();
+  if (crudo === '') return 0;
+  const n = Number(crudo);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new ErrorDeUsuario('Las cantidades por mes tienen que ser números enteros, de 0 en adelante.');
+  }
+  return n;
+}
+
 /**
- * Reparte la cantidad de la línea en partes iguales entre los meses
- * marcados; el resto de la división va a los primeros meses. Sin meses
- * marcados, la línea queda sin mes. Reemplaza el reparto anterior.
+ * El jefe indica cuántas unidades de la línea necesita cada mes (campos
+ * mes-1 … mes-12). La suma no puede pasar la cantidad de la línea; lo que
+ * quede sin repartir aparece como "sin mes". Reemplaza el reparto anterior.
  */
 export async function asignarMeses(form: FormData) {
   const departamentoId = idDe(form, 'departamentoId');
@@ -289,28 +300,33 @@ export async function asignarMeses(form: FormData) {
     const sesion = await exigirSesion();
     exigir(esJefeDe(sesion, departamentoId), 'Solo el jefe del departamento asigna los meses.');
     const lineaId = idDe(form, 'lineaId');
-    const meses = [...new Set(form.getAll('mes').map(Number))]
-      .filter((m) => Number.isInteger(m) && m >= 1 && m <= 12)
-      .sort((a, b) => a - b);
+    const reparto = Array.from({ length: 12 }, (_, i) => cantidadDelMes(form, `mes-${i + 1}`));
+    const repartidas = reparto.reduce((a, b) => a + b, 0);
     const anio = anioFormulacion(sesion);
 
-    const descripcion = await comoUsuario(sesion, async (tx) => {
+    const linea = await comoUsuario(sesion, async (tx) => {
       const l = await exigirLinea(tx, lineaId, departamentoId, anio.id);
-      await tx.delete(lineaCalendario).where(eq(lineaCalendario.lineaId, lineaId));
-
-      if (meses.length > 0) {
-        const base = Math.floor(l.cantidad / meses.length);
-        const resto = l.cantidad % meses.length;
-        const filas = meses
-          .map((mes, i) => ({ lineaId, mes, cantidad: base + (i < resto ? 1 : 0) }))
-          .filter((f) => f.cantidad > 0);
-        await tx.insert(lineaCalendario).values(filas);
+      if (repartidas > l.cantidad) {
+        throw new ErrorDeUsuario(
+          `En "${l.descripcion}" repartiste ${repartidas} unidades y la línea tiene ${l.cantidad}.`,
+        );
       }
-      return l.descripcion;
+
+      await tx.delete(lineaCalendario).where(eq(lineaCalendario.lineaId, lineaId));
+      const filas = reparto
+        .map((cantidad, i) => ({ lineaId, mes: i + 1, cantidad }))
+        .filter((f) => f.cantidad > 0);
+      if (filas.length > 0) await tx.insert(lineaCalendario).values(filas);
+      return l;
     });
 
-    return meses.length === 0
-      ? `"${descripcion}" quedó sin mes asignado.`
-      : `"${descripcion}" repartida en ${meses.length} ${meses.length === 1 ? 'mes' : 'meses'}.`;
+    const faltan = linea.cantidad - repartidas;
+    if (repartidas === 0) return `"${linea.descripcion}" quedó sin mes asignado.`;
+    if (faltan === 0) {
+      return linea.cantidad === 1
+        ? `"${linea.descripcion}" ya tiene su mes.`
+        : `"${linea.descripcion}": las ${linea.cantidad} unidades tienen mes.`;
+    }
+    return `"${linea.descripcion}": ${repartidas} de ${linea.cantidad} unidades con mes; ${faltan === 1 ? 'falta 1' : `faltan ${faltan}`}.`;
   });
 }
