@@ -86,8 +86,41 @@ efectos `trg_z_`.
 - Gráficos: `--dato` / `--dato-2` son una rampa ordinal validada en claro y oscuro. Los
   colores `ok`, `warn` y `bad` son de **estado**: nunca para una serie, y siempre con ícono
   y texto. Cada gráfico tiene su tabla con los mismos valores.
-- El login es provisorio: selector de usuario por cookie. Cuando entre Auth.js solo
-  cambia `getSesion()` y desaparece `src/app/actions.ts`.
+- El login es provisorio: selector de usuario por cookie ("Modo de prueba" arriba de todo).
+  Cuando entre Auth.js solo cambia `getSesion()` y desaparece `src/app/actions.ts`.
+- Resultado de las acciones (`responder`): si sale bien, redirige con `?ok=` y un `#ancla`
+  (la fila o el programa que se tocó); la página se vuelve a montar y los formularios se
+  cierran. Si sale mal, no cambia de dirección: el error viaja en la cookie `gesemco_error`
+  y la página se redibuja en el mismo lugar, con los formularios abiertos y lo escrito.
+  `<Aviso>` muestra ambos flotando bajo el encabezado.
+- Los componentes de cliente (`'use client'`) no pueden importar nada que toque `@/db`
+  (el build falla): los estados del presupuesto están en `src/lib/estados.ts` por eso.
+
+## Diseño de la interfaz
+
+Algunos jefes de departamento usan poco el computador. Por eso:
+
+- Texto base de 16px y nunca menos de 13px. Botones de al menos 44px de alto: usa las
+  clases de `boton` en `ui.ts`. Una acción principal por pantalla.
+- Cada pantalla dice qué hacer ahora: `Pasos` muestra las tres etapas del presupuesto
+  (`pasosDe` en `src/lib/etapas.ts`) y debajo va una tarjeta con la acción que toca.
+- Lo que no se deshace pregunta antes (`BotonConConfirmacion`): quitar un ítem, eliminar
+  un programa, aprobar un presupuesto.
+- Los estados van en palabras, no solo en color: píldoras con ícono y texto.
+- Vocabulario de la pantalla (el código y la base siguen con sus nombres):
+  | En la base | En la pantalla |
+  | --- | --- |
+  | línea | ítem |
+  | línea libre, `fuera_catalogo` | ítem agregado a mano, "Fuera del catálogo" |
+  | formulado | total (o "total pedido") |
+  | mediana de las ofertas | precio del medio |
+  | calendarizar | indicar los meses |
+- Montos que escribe una persona: `CampoPesos` (separador de miles mientras tipea).
+  Cantidades con botones − y +: `CampoCantidad`.
+- Los meses se indican en una sola grilla para todo el presupuesto
+  (`/formulacion/[id]/meses`, `GrillaMeses`), no ítem por ítem.
+- Las fuentes vienen de `@fontsource-variable` (Archivo e IBM Plex Sans), empaquetadas
+  con la app: no dependen de internet.
 
 ## Antes de dar algo por terminado
 

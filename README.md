@@ -47,10 +47,11 @@ distintas personas del colegio de prueba:
 
 | Persona | Rol | Qué probar |
 | --- | --- | --- |
-| Camila Rojas | Jefa de Arte | Presupuesto 2027 en preparación: crea programas, agrega del catálogo, envíalo |
+| Camila Rojas | Jefa de Arte | Presupuesto 2027 en preparación: crea programas, agrega del catálogo o a mano, envíalo |
 | Rodrigo Tapia | Jefe de Matemática | Presupuesto enviado, esperando a Dirección |
 | Sebastián Vidal | Jefe de Ciencia | Presupuesto devuelto con comentario |
-| Luis Pizarro | Jefe de Reproducción de imagen | Presupuesto aprobado, con los meses asignados |
+| Luis Pizarro | Jefe de Reproducción de imagen | Presupuesto aprobado, con casi todos los meses indicados |
+| Verónica Soto | Jefa de Biblioteca | Presupuesto aprobado sin meses: indícalos en la grilla |
 | Andrés Bulnes | Dirección | Aprueba o devuelve; ve los pendientes de pedido |
 | Marcela Ovalle | Contabilidad GESEMCO | Ejecución 2026, proyección mensual 2027 y su CSV |
 | Ignacio Vera | Profesor de Matemática y Física | Ve el saldo de sus departamentos |
@@ -73,10 +74,10 @@ src/lib/formulacion.ts     Consultas de la etapa 1
 src/lib/catalogo.ts        Catálogo y precios de referencia
 src/lib/consultas.ts       Saldos de la ejecución, avisos y pendientes
 src/app/page.tsx           Inicio, distinto según el rol
-src/app/formulacion/       Presupuesto por departamento y sus acciones
+src/app/formulacion/       Presupuesto por departamento, sus acciones y la grilla de meses
 src/app/catalogo/          El catálogo tipo marketplace
 src/app/proyeccion/        Proyección mensual para GESEMCO y su exportación a CSV
-src/components/            Encabezado, gráfico mensual, barra de saldo, avisos
+src/components/            Encabezado, avisos, pasos, ítems, campos, grilla de meses y gráficos
 ```
 
 ## Cuando cambie el modelo de datos
@@ -102,8 +103,11 @@ El archivo `.sql` es la fuente de verdad, no el ORM:
 - **El login es provisorio.** El selector de usuario reemplaza la autenticación mientras
   construimos. Cuando entre Auth.js, se borra `src/app/actions.ts` y se cambia
   `getSesion()`; el resto del código no se entera.
-- **Las fuentes se cargan por `<link>`, no con `next/font/google`.** next/font las descarga
-  durante el build, así que una red sin salida a Google Fonts rompe el build completo.
+- **Las fuentes vienen en paquetes `@fontsource-variable`**, dentro de `node_modules`: la
+  app no depende de Google Fonts ni para compilar ni para verse bien en la red del colegio.
+- **Pensada para quien usa poco el computador.** Texto grande, botones grandes, una acción
+  principal por pantalla y confirmación antes de borrar o aprobar. `CLAUDE.md` tiene las
+  reglas y el vocabulario de la pantalla.
 
 ## Lo que sigue
 
