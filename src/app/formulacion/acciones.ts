@@ -1,6 +1,6 @@
 'use server';
 
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import {
   programa, lineaPresupuesto, lineaCalendario, presupuestoDepartamento,
 } from '@/db';
@@ -59,6 +59,7 @@ async function exigirPrograma(tx: Tx, programaId: number, departamentoId: number
 
 async function exigirLinea(tx: Tx, lineaId: number, departamentoId: number, anioId: number) {
   const [l] = await tx.select({
+    programaId: lineaPresupuesto.programaId,
     descripcion: lineaPresupuesto.descripcion,
     cantidad: lineaPresupuesto.cantidad,
     precioUnitario: lineaPresupuesto.precioUnitario,
@@ -71,7 +72,7 @@ async function exigirLinea(tx: Tx, lineaId: number, departamentoId: number, anio
       eq(presupuestoDepartamento.departamentoId, departamentoId),
       eq(presupuestoDepartamento.anioId, anioId),
     ));
-  if (!l) throw new ErrorDeUsuario('Esa línea no es de tu departamento.');
+  if (!l) throw new ErrorDeUsuario('Ese ítem no es de tu departamento.');
   return l;
 }
 
@@ -88,11 +89,17 @@ export async function crearPrograma(form: FormData) {
     const descripcion = texto(form, 'descripcion', { max: 600 }) || null;
     const anio = anioFormulacion(sesion);
 
-    await comoUsuario(sesion, async (tx) => {
+    const id = await comoUsuario(sesion, async (tx) => {
       const presupuestoId = await asegurarPresupuesto(tx, departamentoId, anio.id);
-      await tx.insert(programa).values({ presupuestoId, nombre, descripcion, creadoPor: sesion.usuario.id });
+      const [p] = await tx.insert(programa)
+        .values({ presupuestoId, nombre, descripcion, creadoPor: sesion.usuario.id })
+        .returning({ id: programa.id });
+      return p.id;
     });
-    return `Programa "${nombre}" creado. Ahora agrégale artículos del catálogo o líneas libres.`;
+    return {
+      mensaje: `Programa "${nombre}" creado. Ahora agrégale lo que necesitas: búscalo en el catálogo o agrégalo a mano.`,
+      ancla: `programa-${id}`,
+    };
   });
 }
 
@@ -109,7 +116,7 @@ export async function eliminarPrograma(form: FormData) {
       await tx.delete(programa).where(eq(programa.id, programaId));
       return p.nombre;
     });
-    return `Programa "${nombre}" eliminado con sus líneas.`;
+    return { mensaje: `Programa "${nombre}" eliminado.`, ancla: 'programas' };
   });
 }
 
@@ -118,12 +125,13 @@ export async function agregarDesdeCatalogo(form: FormData) {
   const volverA = String(form.get('volverA') ?? '/catalogo');
   const destino = volverA.startsWith('/catalogo') ? volverA : '/catalogo';
 
-  await responder(destino, async () => {
+  const articuloId = idDe(form, 'articuloId');
+
+  await responder(`${destino}#articulo-${articuloId}`, async () => {
     const sesion = await exigirSesion();
     exigir(sesion.jefeDe, 'Solo un jefe de departamento agrega artículos a su presupuesto.');
     const departamentoId = sesion.jefeDe.id;
     const programaId = idDe(form, 'programaId');
-    const articuloId = idDe(form, 'articuloId');
     const cantidad = enteroDe(form, 'cantidad', { min: 1 });
     const anio = anioFormulacion(sesion);
 
@@ -143,16 +151,16 @@ export async function agregarDesdeCatalogo(form: FormData) {
       });
       return p.nombre;
     });
-    return `Agregado: ${cantidad} × ${articulo.nombre} (${money(articulo.precio)} c/u) a "${nombrePrograma}".`;
+    return `Agregaste ${cantidad} × ${articulo.nombre} (${money(articulo.precio)} c/u) a "${nombrePrograma}".`;
   });
 }
 
 export async function agregarLineaLibre(form: FormData) {
   const departamentoId = idDe(form, 'departamentoId');
-  await responder(ruta(departamentoId), async () => {
+  const programaId = idDe(form, 'programaId');
+  await responder(`${ruta(departamentoId)}#programa-${programaId}`, async () => {
     const sesion = await exigirSesion();
-    exigir(esJefeDe(sesion, departamentoId), 'Solo el jefe del departamento agrega líneas.');
-    const programaId = idDe(form, 'programaId');
+    exigir(esJefeDe(sesion, departamentoId), 'Solo el jefe del departamento agrega ítems.');
     const descripcion = texto(form, 'descripcion', { obligatorio: true, max: 200 });
     const cantidad = enteroDe(form, 'cantidad', { min: 1 });
     const precio = enteroDe(form, 'precio', { min: 0 });
@@ -160,22 +168,23 @@ export async function agregarLineaLibre(form: FormData) {
     const origen = texto(form, 'origen', { max: 200 }) || 'Estimación del jefe';
     const anio = anioFormulacion(sesion);
 
-    await comoUsuario(sesion, async (tx) => {
+    const id = await comoUsuario(sesion, async (tx) => {
       await exigirPrograma(tx, programaId, departamentoId, anio.id);
-      await tx.insert(lineaPresupuesto).values({
+      const [l] = await tx.insert(lineaPresupuesto).values({
         programaId, descripcion, cantidad, precioUnitario: precio, cuentaContableId: cuenta, origenPrecio: origen,
-      });
+      }).returning({ id: lineaPresupuesto.id });
+      return l.id;
     });
-    return `Línea libre "${descripcion}" agregada.`;
+    return { mensaje: `Agregaste "${descripcion}".`, ancla: `item-${id}` };
   });
 }
 
 export async function editarLinea(form: FormData) {
   const departamentoId = idDe(form, 'departamentoId');
-  await responder(ruta(departamentoId), async () => {
+  const lineaId = idDe(form, 'lineaId');
+  await responder(`${ruta(departamentoId)}#item-${lineaId}`, async () => {
     const sesion = await exigirSesion();
-    exigir(esJefeDe(sesion, departamentoId), 'Solo el jefe del departamento edita líneas.');
-    const lineaId = idDe(form, 'lineaId');
+    exigir(esJefeDe(sesion, departamentoId), 'Solo el jefe del departamento edita ítems.');
     const cantidad = enteroDe(form, 'cantidad', { min: 1 });
     const precio = enteroDe(form, 'precio', { min: 0 });
     const anio = anioFormulacion(sesion);
@@ -194,7 +203,7 @@ export async function editarLinea(form: FormData) {
         .where(eq(lineaPresupuesto.id, lineaId));
       return l.descripcion;
     });
-    return `Línea "${descripcion}" actualizada.`;
+    return `Guardaste los cambios en "${descripcion}".`;
   });
 }
 
@@ -202,16 +211,16 @@ export async function eliminarLinea(form: FormData) {
   const departamentoId = idDe(form, 'departamentoId');
   await responder(ruta(departamentoId), async () => {
     const sesion = await exigirSesion();
-    exigir(esJefeDe(sesion, departamentoId), 'Solo el jefe del departamento elimina líneas.');
+    exigir(esJefeDe(sesion, departamentoId), 'Solo el jefe del departamento quita ítems.');
     const lineaId = idDe(form, 'lineaId');
     const anio = anioFormulacion(sesion);
 
-    const descripcion = await comoUsuario(sesion, async (tx) => {
-      const l = await exigirLinea(tx, lineaId, departamentoId, anio.id);
+    const l = await comoUsuario(sesion, async (tx) => {
+      const linea = await exigirLinea(tx, lineaId, departamentoId, anio.id);
       await tx.delete(lineaPresupuesto).where(eq(lineaPresupuesto.id, lineaId));
-      return l.descripcion;
+      return linea;
     });
-    return `Línea "${descripcion}" eliminada.`;
+    return { mensaje: `Quitaste "${l.descripcion}".`, ancla: `programa-${l.programaId}` };
   });
 }
 
@@ -238,7 +247,7 @@ export async function enviarADireccion(form: FormData) {
     const sesion = await exigirSesion();
     exigir(esJefeDe(sesion, departamentoId), 'Solo el jefe del departamento envía su presupuesto.');
     await cambiarEstado(sesion, departamentoId, 'enviado');
-    return 'Presupuesto enviado a Dirección. Mientras lo revisa no se puede editar.';
+    return 'Enviaste tu presupuesto a Dirección. Te llegará un aviso cuando lo revise.';
   });
 }
 
@@ -248,7 +257,7 @@ export async function retirarEnvio(form: FormData) {
     const sesion = await exigirSesion();
     exigir(esJefeDe(sesion, departamentoId), 'Solo el jefe del departamento retira su envío.');
     await cambiarEstado(sesion, departamentoId, 'borrador');
-    return 'Retiraste el envío: el presupuesto volvió a preparación y lo puedes editar.';
+    return 'Retiraste el envío: tu presupuesto volvió a preparación y ya lo puedes editar.';
   });
 }
 
@@ -258,7 +267,7 @@ export async function aprobarPresupuesto(form: FormData) {
     const sesion = await exigirSesion();
     exigir(esDireccion(sesion), 'Solo Dirección aprueba presupuestos.');
     await cambiarEstado(sesion, departamentoId, 'aprobado');
-    return 'Presupuesto aprobado. El jefe ya puede asignar los meses.';
+    return 'Presupuesto aprobado. El jefe ya puede indicar los meses de cada compra.';
   });
 }
 
@@ -275,7 +284,7 @@ export async function devolverPresupuesto(form: FormData) {
 }
 
 // ---------------------------------------------------------------------
-// Meses: el jefe reparte cada línea en los meses en que la necesita
+// Meses: el jefe indica cuántas unidades de cada ítem necesita cada mes
 // ---------------------------------------------------------------------
 
 /** Cantidad de un mes en el formulario: vacío es 0; si no, un entero de 0 en adelante. */
@@ -290,43 +299,54 @@ function cantidadDelMes(form: FormData, campo: string): number {
 }
 
 /**
- * El jefe indica cuántas unidades de la línea necesita cada mes (campos
- * mes-1 … mes-12). La suma no puede pasar la cantidad de la línea; lo que
- * quede sin repartir aparece como "sin mes". Reemplaza el reparto anterior.
+ * Guarda la grilla de meses completa: por cada ítem (campo "linea"), las
+ * cantidades m-<ítem>-1 … m-<ítem>-12. La suma de un ítem no puede pasar su
+ * cantidad; lo que quede sin repartir aparece como "sin mes". Solo reescribe
+ * los ítems que cambiaron, y todo va en una transacción: o se guarda todo o nada.
  */
-export async function asignarMeses(form: FormData) {
+export async function guardarMeses(form: FormData) {
   const departamentoId = idDe(form, 'departamentoId');
-  await responder(ruta(departamentoId), async () => {
+  await responder(`${ruta(departamentoId)}/meses`, async () => {
     const sesion = await exigirSesion();
-    exigir(esJefeDe(sesion, departamentoId), 'Solo el jefe del departamento asigna los meses.');
-    const lineaId = idDe(form, 'lineaId');
-    const reparto = Array.from({ length: 12 }, (_, i) => cantidadDelMes(form, `mes-${i + 1}`));
-    const repartidas = reparto.reduce((a, b) => a + b, 0);
+    exigir(esJefeDe(sesion, departamentoId), 'Solo el jefe del departamento indica los meses.');
     const anio = anioFormulacion(sesion);
 
-    const linea = await comoUsuario(sesion, async (tx) => {
-      const l = await exigirLinea(tx, lineaId, departamentoId, anio.id);
-      if (repartidas > l.cantidad) {
-        throw new ErrorDeUsuario(
-          `En "${l.descripcion}" repartiste ${repartidas} unidades y la línea tiene ${l.cantidad}.`,
-        );
-      }
+    const lineaIds = [...new Set(form.getAll('linea').map(Number))].filter((n) => Number.isInteger(n) && n > 0);
+    exigir(lineaIds.length > 0, 'No hay ítems para guardar.');
 
-      await tx.delete(lineaCalendario).where(eq(lineaCalendario.lineaId, lineaId));
-      const filas = reparto
-        .map((cantidad, i) => ({ lineaId, mes: i + 1, cantidad }))
-        .filter((f) => f.cantidad > 0);
-      if (filas.length > 0) await tx.insert(lineaCalendario).values(filas);
-      return l;
+    const { completos, incompletos } = await comoUsuario(sesion, async (tx) => {
+      const antes = await tx
+        .select({ lineaId: lineaCalendario.lineaId, mes: lineaCalendario.mes, cantidad: lineaCalendario.cantidad })
+        .from(lineaCalendario)
+        .where(inArray(lineaCalendario.lineaId, lineaIds));
+
+      let completos = 0;
+      let incompletos = 0;
+      for (const lineaId of lineaIds) {
+        const l = await exigirLinea(tx, lineaId, departamentoId, anio.id);
+        const reparto = Array.from({ length: 12 }, (_, i) => cantidadDelMes(form, `m-${lineaId}-${i + 1}`));
+        const suma = reparto.reduce((a, b) => a + b, 0);
+        if (suma > l.cantidad) {
+          throw new ErrorDeUsuario(`En "${l.descripcion}" pusiste ${suma} unidades y el ítem tiene ${l.cantidad}.`);
+        }
+        if (suma === l.cantidad) completos++;
+        else incompletos++;
+
+        const anterior = Array.from({ length: 12 }, (_, i) =>
+          antes.find((a) => a.lineaId === lineaId && a.mes === i + 1)?.cantidad ?? 0);
+        if (anterior.every((c, i) => c === reparto[i])) continue;
+
+        await tx.delete(lineaCalendario).where(eq(lineaCalendario.lineaId, lineaId));
+        const filas = reparto
+          .map((cantidad, i) => ({ lineaId, mes: i + 1, cantidad }))
+          .filter((f) => f.cantidad > 0);
+        if (filas.length > 0) await tx.insert(lineaCalendario).values(filas);
+      }
+      return { completos, incompletos };
     });
 
-    const faltan = linea.cantidad - repartidas;
-    if (repartidas === 0) return `"${linea.descripcion}" quedó sin mes asignado.`;
-    if (faltan === 0) {
-      return linea.cantidad === 1
-        ? `"${linea.descripcion}" ya tiene su mes.`
-        : `"${linea.descripcion}": las ${linea.cantidad} unidades tienen mes.`;
-    }
-    return `"${linea.descripcion}": ${repartidas} de ${linea.cantidad} unidades con mes; ${faltan === 1 ? 'falta 1' : `faltan ${faltan}`}.`;
+    if (incompletos === 0) return 'Meses guardados: todos los ítems tienen sus meses.';
+    return `Meses guardados. ${completos === 0 ? 'Todavía ningún ítem está completo' : `${completos} de ${completos + incompletos} ítems completos`}; `
+      + `${incompletos === 1 ? 'a 1 ítem le faltan' : `a ${incompletos} ítems les faltan`} meses.`;
   });
 }

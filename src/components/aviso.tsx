@@ -1,29 +1,31 @@
-import { IconoAlerta, IconoOk } from './iconos';
+import { cookies } from 'next/headers';
+import { AvisoFlotante } from './aviso-flotante';
+import { COOKIE_ERROR } from '@/lib/acciones';
 
 type Params = Record<string, string | string[] | undefined>;
+export type LeidoAviso = { ok?: string; error?: string; clave?: string };
 
-/** Lee ?ok= y ?error=, que dejan las acciones del servidor al volver. */
-export function leerAviso(params: Params): { ok?: string; error?: string } {
+/**
+ * El resultado de la última acción: el éxito llega en ?ok= (con ?t= para
+ * distinguir dos avisos iguales seguidos) y el error en una cookie de un solo
+ * uso, porque ante un error la página no cambia de dirección (ver `responder`).
+ */
+export async function leerAviso(params: Params): Promise<LeidoAviso> {
+  const crudo = (await cookies()).get(COOKIE_ERROR)?.value;
+  if (crudo) {
+    try {
+      const { mensaje, t } = JSON.parse(decodeURIComponent(crudo)) as { mensaje: string; t: number };
+      return { error: mensaje, clave: String(t) };
+    } catch {
+      // Una cookie que no se entiende no debe romper la página.
+    }
+  }
   const uno = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
-  return { ok: uno(params.ok), error: uno(params.error) };
+  return { ok: uno(params.ok), clave: uno(params.t) };
 }
 
-export function Aviso({ ok, error }: { ok?: string; error?: string }) {
-  if (error) {
-    return (
-      <div role="alert" className="mb-5 flex items-start gap-2.5 rounded-xl border border-bad/30 bg-bad-soft px-4 py-3 text-sm text-ink">
-        <IconoAlerta className="mt-0.5 size-4 shrink-0 text-bad" />
-        <p><b className="font-semibold text-bad">No se pudo: </b>{error}</p>
-      </div>
-    );
-  }
-  if (ok) {
-    return (
-      <div role="status" className="mb-5 flex items-start gap-2.5 rounded-xl border border-ok/30 bg-ok-soft px-4 py-3 text-sm text-ink">
-        <IconoOk className="mt-0.5 size-4 shrink-0 text-ok" />
-        <p>{ok}</p>
-      </div>
-    );
-  }
-  return null;
+/** El resultado de la última acción, flotando arriba para que se vea aunque la página baje. */
+export function Aviso({ ok, error, clave }: LeidoAviso) {
+  if (!ok && !error) return null;
+  return <AvisoFlotante key={clave ?? error ?? ok} ok={ok} error={error} />;
 }

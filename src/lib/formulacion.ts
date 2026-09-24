@@ -4,20 +4,9 @@ import {
   programa, lineaPresupuesto, lineaCalendario, cuentaContable,
 } from '@/db';
 import { num } from './consultas';
+import type { EstadoPresupuesto } from './estados';
 
-export type EstadoPresupuesto = 'borrador' | 'enviado' | 'devuelto' | 'aprobado';
-
-export const NOMBRE_ESTADO: Record<EstadoPresupuesto | 'sin_iniciar', string> = {
-  sin_iniciar: 'Sin iniciar',
-  borrador: 'En preparación',
-  enviado: 'En revisión',
-  devuelto: 'Devuelto',
-  aprobado: 'Aprobado',
-};
-
-/** Solo el jefe edita, y solo en estos estados (la base lo exige igual). */
-export const esEditable = (estado: EstadoPresupuesto | null) =>
-  estado === null || estado === 'borrador' || estado === 'devuelto';
+export { NOMBRE_ESTADO, esEditable, type EstadoPresupuesto } from './estados';
 
 export type ResumenPresupuesto = {
   departamentoId: number;
@@ -212,4 +201,13 @@ export async function cuentasContables() {
     .from(cuentaContable)
     .where(eq(cuentaContable.activa, true))
     .orderBy(asc(cuentaContable.codigo));
+}
+
+/** Cuántos ítems del presupuesto tienen todos sus meses (para el inicio del jefe). */
+export async function avanceMeses(presupuestoId: number): Promise<{ listos: number; total: number }> {
+  const filas = await db
+    .select({ sinMes: vwCalendarizacionLinea.cantidadSinMes })
+    .from(vwCalendarizacionLinea)
+    .where(eq(vwCalendarizacionLinea.presupuestoId, presupuestoId));
+  return { listos: filas.filter((f) => num(f.sinMes) === 0).length, total: filas.length };
 }

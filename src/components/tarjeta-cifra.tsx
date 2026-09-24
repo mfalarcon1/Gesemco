@@ -9,10 +9,10 @@ export function TarjetaCifra({
     tono === 'ok' ? 'text-ok' : tono === 'warn' ? 'text-warn' : tono === 'bad' ? 'text-bad' : 'text-ink';
 
   return (
-    <div className="rounded-xl border border-line bg-surface p-4">
-      <p className="mb-1.5 text-xs text-ink-3">{titulo}</p>
-      <p className={`text-xl font-semibold tracking-tight ${color}`}>{valor}</p>
-      {nota ? <p className="mt-1 text-xs text-ink-3">{nota}</p> : null}
+    <div className="rounded-2xl border border-line bg-surface p-4">
+      <p className="mb-1 text-sm font-medium text-ink-2">{titulo}</p>
+      <p className={`text-2xl font-semibold tracking-tight ${color}`}>{valor}</p>
+      {nota ? <p className="mt-1 text-sm text-ink-2">{nota}</p> : null}
     </div>
   );
 }

@@ -42,15 +42,17 @@ export function fechaNumerica(iso: string | null | undefined): string {
   return `${d}-${m}-${a}`;
 }
 
+/** "Camila Rojas" -> "Camila", para saludar. */
+export function primerNombre(nombre: string): string {
+  return nombre.trim().split(/\s+/)[0] ?? nombre;
+}
+
+/** plural(1, 'ítem', 'ítems') -> "1 ítem"; plural(5, …) -> "5 ítems". */
+export function plural(n: number, uno: string, varios: string): string {
+  return `${entero(n)} ${n === 1 ? uno : varios}`;
+}
+
 export function iniciales(nombre: string): string {
   const p = nombre.trim().split(/\s+/);
   return ((p[0]?.[0] ?? '') + (p[1]?.[0] ?? '')).toUpperCase();
-}
-
-/** Los meses de una línea, compactos: "mar 4 · abr 4 · may 4" */
-export function repartoCorto(meses: { mes: number; cantidad: number }[]): string {
-  return [...meses]
-    .sort((a, b) => a.mes - b.mes)
-    .map((m) => `${MESES_CORTOS[m.mes - 1]} ${m.cantidad}`)
-    .join(' · ');
 }

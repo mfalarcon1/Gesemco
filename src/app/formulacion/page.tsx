@@ -2,8 +2,9 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { Encabezado, SinAcceso, SinDatos } from '@/components/encabezado';
 import { EstadoPresupuestoPildora } from '@/components/pildoras';
-import { TarjetaCifra } from '@/components/tarjeta-cifra';
-import { tarjeta, td, tdNum, th } from '@/components/ui';
+import { ResumenFormulacion } from '@/components/resumen-formulacion';
+import { IconoFlecha } from '@/components/iconos';
+import { boton, tarjeta, td, tdNum, th, tituloPagina } from '@/components/ui';
 import { esDireccion, getSesion, participaEnFormulacion } from '@/lib/sesion';
 import { resumenFormulacion } from '@/lib/formulacion';
 import { fecha, money } from '@/lib/formato';
@@ -19,7 +20,7 @@ export default async function Formulacion() {
     return (
       <>
         <Encabezado sesion={sesion} activo="formulacion" />
-        <SinAcceso mensaje="La formulación del presupuesto la hacen los jefes de departamento, Dirección y contabilidad." />
+        <SinAcceso mensaje="El presupuesto de cada departamento lo arman los jefes y lo revisan Dirección y contabilidad." />
       </>
     );
   }
@@ -35,72 +36,70 @@ export default async function Formulacion() {
 
   const anio = sesion.anioFormulacion.anio;
   const filas = await resumenFormulacion(sesion.colegio.id, sesion.anioFormulacion.id);
-  const aprobados = filas.filter((f) => f.estado === 'aprobado');
-  const porRevisar = filas.filter((f) => f.estado === 'enviado');
-  const formulado = filas.reduce((s, f) => s + f.formulado, 0);
-  const fueraCatalogo = filas.reduce((s, f) => s + f.fueraCatalogo, 0);
+  // Filas con un botón: el texto va centrado en altura, alineado con él.
+  const celda = td.replace('align-top', 'align-middle');
+  const celdaNum = tdNum.replace('align-top', 'align-middle');
+  const soyDireccion = esDireccion(sesion);
 
   // Dirección ve primero lo que espera su revisión.
-  const orden = esDireccion(sesion)
-    ? [...porRevisar, ...filas.filter((f) => f.estado !== 'enviado')]
+  const orden = soyDireccion
+    ? [...filas.filter((f) => f.estado === 'enviado'), ...filas.filter((f) => f.estado !== 'enviado')]
     : filas;
 
   return (
     <>
       <Encabezado sesion={sesion} activo="formulacion" />
-      <main className="mx-auto max-w-6xl px-5 pb-20 pt-7">
-        <h1 className="mb-1 font-display text-2xl font-semibold">Formulación {anio}</h1>
-        <p className="mb-6 max-w-3xl text-sm text-ink-2">
-          Cada jefe arma sus programas con artículos del catálogo o líneas libres y los envía. Dirección los
-          conversa en reunión y después aprueba o devuelve cada presupuesto aquí. Con el presupuesto aprobado,
-          el jefe asigna los meses y GESEMCO recibe la proyección mensual.
+      <main className="mx-auto max-w-6xl px-5 pb-24 pt-8">
+        <h1 className={tituloPagina}>Presupuestos {anio}</h1>
+        <p className="mb-6 mt-2 max-w-3xl text-[17px] text-ink-2">
+          Cada jefe arma el presupuesto de su departamento y lo envía. Dirección lo conversa en una reunión y lo aprueba
+          o lo devuelve con un comentario. Con el presupuesto aprobado, el jefe indica los meses y GESEMCO recibe la
+          proyección mensual.
         </p>
 
-        <div className="mb-6 grid grid-cols-[repeat(auto-fit,minmax(168px,1fr))] gap-3">
-          <TarjetaCifra titulo="Formulado" valor={money(formulado)} nota="suma de todas las líneas" />
-          <TarjetaCifra titulo="Aprobado" valor={money(aprobados.reduce((s, f) => s + (f.montoAprobado ?? 0), 0))}
-            nota={`${aprobados.length} de ${filas.length} departamentos`} />
-          <TarjetaCifra titulo="Esperan revisión" valor={String(porRevisar.length)}
-            nota={porRevisar.map((f) => f.departamento).join(', ') || 'ninguno'} />
-          <TarjetaCifra titulo="Fuera de catálogo" valor={money(fueraCatalogo)}
-            nota="servicios y artículos sin precio de tienda" />
-        </div>
+        <ResumenFormulacion filas={filas} />
 
-        <div className={`${tarjeta} overflow-hidden`}>
+        <div className={`${tarjeta} mt-6 overflow-hidden`}>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[820px] border-collapse text-sm">
+            <table className="w-full min-w-[860px] border-collapse">
               <thead>
                 <tr className="bg-surface-2">
                   <th className={th}>Departamento</th>
                   <th className={th}>Estado</th>
-                  <th className={`${th} text-right`}>Programas</th>
-                  <th className={`${th} text-right`}>Líneas</th>
-                  <th className={`${th} text-right`}>Formulado</th>
+                  <th className={`${th} text-right`}>Ítems</th>
+                  <th className={`${th} text-right`}>Total pedido</th>
                   <th className={`${th} text-right`}>Aprobado</th>
-                  <th className={th}>Último movimiento</th>
+                  <th className={th}>Última novedad</th>
+                  <th className={th}><span className="sr-only">Abrir</span></th>
                 </tr>
               </thead>
               <tbody>
-                {orden.map((f) => (
-                  <tr key={f.departamentoId} className="hover:bg-surface-2">
-                    <td className={td}>
-                      <Link href={`/formulacion/${f.departamentoId}`} className="font-medium text-accent hover:underline">
-                        {f.departamento}
-                      </Link>
-                    </td>
-                    <td className={td}><EstadoPresupuestoPildora estado={f.estado} /></td>
-                    <td className={tdNum}>{f.programas}</td>
-                    <td className={tdNum}>{f.lineas}</td>
-                    <td className={tdNum}>{f.estado ? money(f.formulado) : '—'}</td>
-                    <td className={tdNum}>{f.montoAprobado !== null ? money(f.montoAprobado) : '—'}</td>
-                    <td className={`${td} text-ink-2`}>
-                      {f.estado === 'enviado' && `Enviado el ${fecha(f.enviadoEn)}`}
-                      {(f.estado === 'aprobado' || f.estado === 'devuelto') &&
-                        `${f.estado === 'aprobado' ? 'Aprobado' : 'Devuelto'} el ${fecha(f.resueltoEn)}`}
-                      {(f.estado === 'borrador' || f.estado === null) && <span className="text-ink-3">—</span>}
-                    </td>
-                  </tr>
-                ))}
+                {orden.map((f) => {
+                  const revisar = soyDireccion && f.estado === 'enviado';
+                  return (
+                    <tr key={f.departamentoId} className={revisar ? 'bg-accent-soft/50' : 'hover:bg-surface-2'}>
+                      <td className={`${celda} font-semibold`}>{f.departamento}</td>
+                      <td className={celda}><EstadoPresupuestoPildora estado={f.estado} /></td>
+                      <td className={celdaNum}>{f.lineas}</td>
+                      <td className={celdaNum}>{f.estado ? money(f.formulado) : '—'}</td>
+                      <td className={celdaNum}>{f.montoAprobado !== null ? money(f.montoAprobado) : '—'}</td>
+                      <td className={`${celda} text-ink-2`}>
+                        {f.estado === 'enviado' && `Enviado el ${fecha(f.enviadoEn)}`}
+                        {(f.estado === 'aprobado' || f.estado === 'devuelto') &&
+                          `${f.estado === 'aprobado' ? 'Aprobado' : 'Devuelto'} el ${fecha(f.resueltoEn)}`}
+                        {f.estado === 'borrador' && 'En preparación'}
+                        {f.estado === null && 'Todavía no empieza'}
+                      </td>
+                      <td className={`${celda} text-right`}>
+                        <Link href={`/formulacion/${f.departamentoId}`}
+                          aria-label={`${revisar ? 'Revisar' : 'Ver'} el presupuesto de ${f.departamento}`}
+                          className={revisar ? `${boton.chico} bg-accent text-paper hover:bg-accent-ink` : `${boton.chico} text-accent hover:bg-accent-soft`}>
+                          {revisar ? 'Revisar' : 'Ver'}<IconoFlecha className="size-4" />
+                        </Link>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

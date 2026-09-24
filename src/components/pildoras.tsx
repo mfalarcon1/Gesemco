@@ -1,7 +1,7 @@
 import { IconoAlerta, IconoOk, IconoReloj } from './iconos';
-import { NOMBRE_ESTADO, type EstadoPresupuesto } from '@/lib/formulacion';
+import { NOMBRE_ESTADO, type EstadoPresupuesto } from '@/lib/estados';
 
-const pildora = 'inline-flex items-center gap-1 whitespace-nowrap rounded-md px-2 py-0.5 text-xs font-medium';
+const pildora = 'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-[13px] font-semibold leading-none';
 
 export function EstadoPresupuestoPildora({ estado }: { estado: EstadoPresupuesto | null }) {
   switch (estado) {
@@ -12,19 +12,19 @@ export function EstadoPresupuestoPildora({ estado }: { estado: EstadoPresupuesto
     case 'enviado':
       return (
         <span className={`${pildora} bg-accent-soft text-accent-ink`}>
-          <IconoReloj className="size-3.5" />{NOMBRE_ESTADO.enviado}
+          <IconoReloj className="size-4" />{NOMBRE_ESTADO.enviado}
         </span>
       );
     case 'devuelto':
       return (
         <span className={`${pildora} bg-warn-soft text-warn`}>
-          <IconoAlerta className="size-3.5" />{NOMBRE_ESTADO.devuelto}
+          <IconoAlerta className="size-4" />{NOMBRE_ESTADO.devuelto}
         </span>
       );
     case 'aprobado':
       return (
         <span className={`${pildora} bg-ok-soft text-ok`}>
-          <IconoOk className="size-3.5" />{NOMBRE_ESTADO.aprobado}
+          <IconoOk className="size-4" />{NOMBRE_ESTADO.aprobado}
         </span>
       );
   }
@@ -44,19 +44,19 @@ export function EstadoOrdenPildora({ estado }: { estado: string }) {
   const e = ORDEN[estado] ?? { nombre: estado, clase: 'bg-surface-2 text-ink-2' };
   return (
     <span className={`${pildora} ${e.clase}`}>
-      {e.icono === 'ok' && <IconoOk className="size-3.5" />}
-      {e.icono === 'alerta' && <IconoAlerta className="size-3.5" />}
-      {e.icono === 'reloj' && <IconoReloj className="size-3.5" />}
+      {e.icono === 'ok' && <IconoOk className="size-4" />}
+      {e.icono === 'alerta' && <IconoAlerta className="size-4" />}
+      {e.icono === 'reloj' && <IconoReloj className="size-4" />}
       {e.nombre}
     </span>
   );
 }
 
-/** Marca neutra: la línea no viene del catálogo (servicio, artículo sin precio). */
+/** Marca neutra: el ítem no viene del catálogo (un servicio, algo sin precio de tienda). */
 export function FueraDeCatalogo() {
   return (
-    <span className="whitespace-nowrap rounded border border-line px-1.5 py-px text-[10px] font-medium uppercase tracking-wider text-ink-3">
-      Fuera de catálogo
+    <span className="whitespace-nowrap rounded-full border border-line-strong px-2 py-0.5 text-[13px] font-medium text-ink-2">
+      Fuera del catálogo
     </span>
   );
 }

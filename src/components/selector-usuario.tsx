@@ -20,21 +20,21 @@ function detalle(u: Opcion) {
   return u.departamento ? ` — ${rol} ${u.departamento}` : ` — ${rol}`;
 }
 
+/** Reemplaza al inicio de sesión mientras se prueba el sistema. */
 export function SelectorUsuario({ usuarios, actual }: { usuarios: Opcion[]; actual: number }) {
   const form = useRef<HTMLFormElement>(null);
 
   return (
-    <form ref={form} action={cambiarUsuario} className="flex items-center gap-2">
-      <label htmlFor="usuarioId" className="text-xs text-ink-3">
-        Ver como
+    <form ref={form} action={cambiarUsuario} className="flex min-w-0 items-center gap-2">
+      <label htmlFor="usuarioId" className="whitespace-nowrap">
+        Estás viendo el sistema como
       </label>
       <select
         id="usuarioId"
         name="usuarioId"
         defaultValue={actual}
         onChange={() => form.current?.requestSubmit()}
-        className="max-w-[16rem] rounded-lg border border-line-strong bg-surface-2 px-3 py-1.5 text-sm text-ink
-                   focus:outline-2 focus:outline-accent focus:-outline-offset-1"
+        className="min-h-9 min-w-0 max-w-[20rem] rounded-md border border-line-strong bg-surface px-2.5 py-1 text-sm text-ink"
       >
         {usuarios.map((u) => (
           <option key={u.id} value={u.id}>
@@ -43,7 +43,7 @@ export function SelectorUsuario({ usuarios, actual }: { usuarios: Opcion[]; actu
         ))}
       </select>
       <noscript>
-        <button type="submit" className="rounded-lg border border-line-strong px-2 py-1 text-xs">
+        <button type="submit" className="rounded-md border border-line-strong px-2 py-1 text-sm">
           Cambiar
         </button>
       </noscript>

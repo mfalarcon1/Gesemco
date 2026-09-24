@@ -38,7 +38,7 @@ export function BarraSaldo({
 
 export function Leyenda() {
   return (
-    <div className="mt-2.5 flex flex-wrap gap-4 text-xs text-ink-2">
+    <div className="mt-3 flex flex-wrap gap-5 text-sm text-ink-2">
       <span><i className="mr-1.5 inline-block size-2.5 rounded-[3px] bg-dato align-[-1px]" />Ejecutado</span>
       <span><i className="mr-1.5 inline-block size-2.5 rounded-[3px] bg-dato-2 align-[-1px]" />Comprometido</span>
       <span><i className="mr-1.5 inline-block size-2.5 rounded-[3px] bg-track align-[-1px]" />Disponible</span>

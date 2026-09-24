@@ -1,16 +1,21 @@
 import Link from 'next/link';
-import { Encabezado, SinDatos } from '@/components/encabezado';
+import { Encabezado, SinDatos, rolVisible } from '@/components/encabezado';
 import { BarraSaldo, Leyenda } from '@/components/barra-saldo';
 import { TarjetaCifra } from '@/components/tarjeta-cifra';
 import { EstadoPresupuestoPildora } from '@/components/pildoras';
-import { IconoAlerta } from '@/components/iconos';
-import { tarjeta, td, tdNum, th, titulo } from '@/components/ui';
+import { Pasos } from '@/components/pasos';
+import { ResumenFormulacion } from '@/components/resumen-formulacion';
+import { IconoAlerta, IconoCalendario, IconoDescarga, IconoFlecha } from '@/components/iconos';
+import { ayuda, boton, tarjeta, td, tdNum, th, titulo, tituloPagina } from '@/components/ui';
 import { esContabilidad, esDireccion, getSesion, type Sesion } from '@/lib/sesion';
 import {
   notificacionesRecientes, pendientesDeDireccion, saldosEjecucion, totalizar, type SaldoDepartamento,
 } from '@/lib/consultas';
-import { resumenFormulacion, type EstadoPresupuesto } from '@/lib/formulacion';
-import { fecha, money, pct } from '@/lib/formato';
+import {
+  avanceMeses, proyeccionColegio, resumenFormulacion, type EstadoPresupuesto, type ResumenPresupuesto,
+} from '@/lib/formulacion';
+import { pasosDe, type Avance } from '@/lib/etapas';
+import { fecha, money, pct, plural, primerNombre } from '@/lib/formato';
 
 // Las rutas que ya existen. Los avisos que apuntan a pantallas de la
 // etapa 2 (todavía en construcción) se muestran sin enlace.
@@ -24,34 +29,50 @@ export default async function Inicio() {
     ? undefined
     : [...new Set([sesion.jefeDe?.id, ...sesion.profesorEn.map((d) => d.id)].filter((x): x is number => !!x))];
 
-  const [saldos, formulacion, avisos, pendientes] = await Promise.all([
+  const anioF = sesion.anioFormulacion;
+  const [saldos, formulacion, avisos, pendientes, proyeccion] = await Promise.all([
     sesion.anioEjecucion
       ? saldosEjecucion(sesion.colegio.id, sesion.anioEjecucion.id, departamentosPropios)
       : Promise.resolve([]),
-    sesion.anioFormulacion ? resumenFormulacion(sesion.colegio.id, sesion.anioFormulacion.id) : Promise.resolve([]),
+    anioF ? resumenFormulacion(sesion.colegio.id, anioF.id) : Promise.resolve([]),
     notificacionesRecientes(sesion.usuario.id),
     esDireccion(sesion) ? pendientesDeDireccion(sesion.colegio.id) : Promise.resolve([]),
+    anioF && esContabilidad(sesion) ? proyeccionColegio(sesion.colegio.id, anioF.id) : Promise.resolve(null),
   ]);
 
   const miFormulacion = sesion.jefeDe ? formulacion.find((f) => f.departamentoId === sesion.jefeDe!.id) : undefined;
+  const miAvance: Avance = miFormulacion?.presupuestoId && miFormulacion.estado === 'aprobado'
+    ? await avanceMeses(miFormulacion.presupuestoId)
+    : { listos: 0, total: 0 };
+
+  const soloProfesor = !sesion.jefeDe && !sesion.veTodoElColegio;
 
   return (
     <>
       <Encabezado sesion={sesion} activo="inicio" />
-      <main className="mx-auto max-w-6xl px-5 pb-20 pt-7">
-        {sesion.jefeDe && miFormulacion && sesion.anioFormulacion && (
-          <MiFormulacion
-            departamentoId={sesion.jefeDe.id}
-            departamento={sesion.jefeDe.nombre}
-            anio={sesion.anioFormulacion.anio}
-            estado={miFormulacion.estado}
-            formulado={miFormulacion.formulado}
-            comentario={miFormulacion.comentarioDireccion}
-          />
+      <main className="mx-auto max-w-6xl space-y-10 px-5 pb-24 pt-8">
+        <div>
+          <h1 className={tituloPagina}>Hola, {primerNombre(sesion.usuario.nombre)}</h1>
+          <p className="mt-1 text-[17px] text-ink-2">
+            {rolVisible(sesion)} · {sesion.colegio.nombre}
+            {soloProfesor && sesion.profesorEn.length > 0 && ` · clases en ${sesion.profesorEn.map((d) => d.nombre).join(' y ')}`}
+          </p>
+        </div>
+
+        {sesion.jefeDe && miFormulacion && anioF && (
+          <MiPresupuesto resumen={miFormulacion} anio={anioF.anio} avance={miAvance} />
         )}
 
-        {sesion.veTodoElColegio && sesion.anioFormulacion && formulacion.length > 0 && (
-          <ResumenFormulacion sesion={sesion} filas={formulacion} anio={sesion.anioFormulacion.anio} />
+        {esDireccion(sesion) && anioF && (
+          <ParaRevisar filas={formulacion.filter((f) => f.estado === 'enviado')} />
+        )}
+
+        {proyeccion && anioF && (
+          <TarjetaProyeccion anio={anioF.anio} filas={proyeccion} departamentos={formulacion.length} />
+        )}
+
+        {sesion.veTodoElColegio && anioF && formulacion.length > 0 && (
+          <EstadoFormulacion filas={formulacion} anio={anioF.anio} />
         )}
 
         {pendientes.length > 0 && <PendientesDireccion pendientes={pendientes} />}
@@ -60,139 +81,182 @@ export default async function Inicio() {
           <Ejecucion sesion={sesion} saldos={saldos} anio={sesion.anioEjecucion.anio} />
         )}
 
-        <section>
-          <h2 className={`${titulo} mb-3.5`}>Avisos</h2>
+        {soloProfesor && (
+          <p className={`${tarjeta} px-6 py-5 text-ink-2`}>
+            Pronto podrás pedir materiales desde aquí: la solicitud llegará a tu jefe de departamento.
+          </p>
+        )}
+
+        <section aria-labelledby="avisos">
+          <h2 id="avisos" className={`${titulo} mb-4`}>Avisos</h2>
           <div className={`${tarjeta} divide-y divide-line`}>
-            {avisos.length === 0 && <p className="px-4 py-6 text-center text-sm text-ink-3">No tienes avisos.</p>}
+            {avisos.length === 0 && <p className="px-6 py-8 text-center text-ink-2">No tienes avisos.</p>}
             {avisos.map((a) => {
               const activo = a.enlace && RUTAS_ACTIVAS.some((r) => a.enlace!.startsWith(r));
               const contenido = (
                 <>
-                  <p className="text-sm font-medium text-ink">{a.titulo}</p>
-                  {a.mensaje && <p className="mt-0.5 text-sm text-ink-2">{a.mensaje}</p>}
-                  <p className="mt-1 text-xs text-ink-3">{fecha(a.creadaEn)}</p>
+                  <p className="font-semibold text-ink">{a.titulo}</p>
+                  {a.mensaje && <p className="mt-0.5 text-ink-2">{a.mensaje}</p>}
+                  <p className="mt-1 text-sm text-ink-2">{fecha(a.creadaEn)}</p>
                 </>
               );
               return activo ? (
-                <Link key={a.id} href={a.enlace!} className="block px-4 py-3 hover:bg-surface-2">{contenido}</Link>
+                <Link key={a.id} href={a.enlace!} className="flex items-center gap-4 px-6 py-4 hover:bg-surface-2">
+                  <span className="min-w-0 flex-1">{contenido}</span>
+                  <IconoFlecha className="size-5 shrink-0 text-accent" />
+                </Link>
               ) : (
-                <div key={a.id} className="px-4 py-3">{contenido}</div>
+                <div key={a.id} className="px-6 py-4">{contenido}</div>
               );
             })}
           </div>
         </section>
-
-        <footer className="mt-10 border-t border-line pt-5 text-xs text-ink-3">
-          Etapa 1 (formulación) en construcción. La etapa 2 (solicitudes de profesores, órdenes, pendientes y
-          compras) ya está en la base de datos; sus pantallas vienen después.
-        </footer>
       </main>
     </>
   );
 }
 
-function MiFormulacion({
-  departamentoId, departamento, anio, estado, formulado, comentario,
-}: {
-  departamentoId: number; departamento: string; anio: number;
-  estado: EstadoPresupuesto | null; formulado: number; comentario: string | null;
-}) {
-  const siguientePaso: Record<EstadoPresupuesto | 'sin_iniciar', string> = {
-    sin_iniciar: 'Empieza creando los programas que tu departamento hará el próximo año.',
-    borrador: 'Sigue armando tus programas y envíalo a Dirección cuando esté listo.',
-    enviado: 'Dirección lo está revisando. Te llegará un aviso cuando lo resuelva.',
-    devuelto: 'Dirección lo devolvió con comentarios: ajústalo y vuelve a enviarlo.',
-    aprobado: 'Está aprobado. Indica cuántas unidades de cada línea necesitas en cada mes.',
+// ---------------------------------------------------------------------
+// Jefe de departamento: su presupuesto y qué hacer ahora
+// ---------------------------------------------------------------------
+
+function MiPresupuesto({ resumen: r, anio, avance }: { resumen: ResumenPresupuesto; anio: number; avance: Avance }) {
+  const e = r.estado;
+  const mesesListos = avance.total > 0 && avance.listos === avance.total;
+  const presupuesto = `/formulacion/${r.departamentoId}`;
+
+  const ahora: Record<EstadoPresupuesto | 'sin_iniciar', { texto: string; boton: string; href: string }> = {
+    sin_iniciar: { texto: 'Empieza creando los programas que tu departamento hará el próximo año.', boton: 'Empezar mi presupuesto', href: presupuesto },
+    borrador: { texto: 'Sigue agregando lo que necesitas y, cuando termines, envíalo a Dirección.', boton: 'Seguir con mi presupuesto', href: presupuesto },
+    devuelto: { texto: 'Dirección te lo devolvió con un comentario: ajústalo y vuelve a enviarlo.', boton: 'Ver lo que pidió Dirección', href: presupuesto },
+    enviado: { texto: 'Dirección lo está revisando. Te llegará un aviso cuando lo resuelva.', boton: 'Ver mi presupuesto', href: presupuesto },
+    aprobado: mesesListos
+      ? { texto: 'Está aprobado y todo tiene sus meses. No tienes nada pendiente.', boton: 'Ver mi presupuesto', href: presupuesto }
+      : { texto: 'Está aprobado. Ahora indica en qué meses necesitas cada cosa.', boton: 'Indicar los meses', href: `${presupuesto}/meses` },
   };
+  const paso = ahora[e ?? 'sin_iniciar'];
 
   return (
-    <section className={`${tarjeta} mb-8 flex flex-wrap items-center gap-4 p-5`}>
-      <div className="min-w-0 flex-1">
-        <div className="mb-1 flex flex-wrap items-center gap-2">
-          <h2 className={titulo}>Presupuesto {anio} de {departamento}</h2>
-          <EstadoPresupuestoPildora estado={estado} />
+    <section aria-labelledby="mi-presupuesto" className={`${tarjeta} p-6`}>
+      <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
+        <div className="min-w-[15rem] flex-1">
+          <div className="flex flex-wrap items-center gap-3">
+            <h2 id="mi-presupuesto" className={titulo}>Tu presupuesto {anio} de {r.departamento}</h2>
+            <EstadoPresupuestoPildora estado={e} />
+          </div>
+          <p className="mt-1 text-[17px] text-ink">{paso.texto}</p>
+          {e === 'devuelto' && r.comentarioDireccion && (
+            <blockquote className="mt-2 border-l-4 border-warn/50 pl-4 text-ink-2">“{r.comentarioDireccion}”</blockquote>
+          )}
         </div>
-        <p className="text-sm text-ink-2">{siguientePaso[estado ?? 'sin_iniciar']}</p>
-        {estado === 'devuelto' && comentario && (
-          <p className="mt-2 text-sm text-ink"><b className="font-medium">Dirección:</b> {comentario}</p>
-        )}
+        <div className="text-right">
+          <p className="text-sm font-medium text-ink-2">{e === 'aprobado' ? 'Monto aprobado' : 'Total'}</p>
+          <p className="text-2xl font-semibold">{money(r.montoAprobado ?? r.formulado)}</p>
+        </div>
       </div>
-      <div className="text-right">
-        <p className="text-xs text-ink-3">Formulado</p>
-        <p className="text-xl font-semibold">{money(formulado)}</p>
+
+      <div className="mt-5">
+        <Pasos pasos={pasosDe(r, avance)} />
       </div>
-      <Link href={`/formulacion/${departamentoId}`}
-        className="rounded-lg bg-accent px-3.5 py-2 text-sm font-medium text-paper hover:opacity-90">
-        Ir a mi presupuesto
+
+      <Link href={paso.href} className={`${boton.primario} mt-5`}>
+        {e === 'aprobado' && !mesesListos && <IconoCalendario className="size-5" />}
+        {paso.boton}<IconoFlecha className="size-4" />
       </Link>
     </section>
   );
 }
 
-function ResumenFormulacion({
-  sesion, filas, anio,
-}: {
-  sesion: Sesion; filas: Awaited<ReturnType<typeof resumenFormulacion>>; anio: number;
-}) {
-  const cuenta = (e: EstadoPresupuesto | null) => filas.filter((f) => f.estado === e).length;
-  const porRevisar = filas.filter((f) => f.estado === 'enviado');
-  const formulado = filas.reduce((s, f) => s + f.formulado, 0);
-  const aprobado = filas.reduce((s, f) => s + (f.montoAprobado ?? 0), 0);
+// ---------------------------------------------------------------------
+// Dirección y contabilidad
+// ---------------------------------------------------------------------
 
+function ParaRevisar({ filas }: { filas: ResumenPresupuesto[] }) {
   return (
-    <section className="mb-8">
-      <div className="mb-3.5 flex flex-wrap items-baseline gap-3">
-        <h2 className={titulo}>Formulación {anio}</h2>
-        <Link href="/formulacion" className="text-sm text-accent hover:underline">Ver todos los departamentos</Link>
-      </div>
-
-      {esDireccion(sesion) && porRevisar.length > 0 && (
-        <div className="mb-4 rounded-xl border border-accent/30 bg-accent-soft px-4 py-3 text-sm text-accent-ink">
-          <b className="font-semibold">
-            {porRevisar.length === 1 ? 'Un presupuesto espera' : `${porRevisar.length} presupuestos esperan`} tu revisión:
-          </b>{' '}
-          {porRevisar.map((f, i) => (
-            <span key={f.departamentoId}>
-              {i > 0 && ', '}
-              <Link href={`/formulacion/${f.departamentoId}`} className="underline underline-offset-2">{f.departamento}</Link>
-            </span>
+    <section aria-labelledby="para-revisar">
+      <h2 id="para-revisar" className={`${titulo} mb-4`}>Para revisar</h2>
+      {filas.length === 0 ? (
+        <p className={`${tarjeta} px-6 py-6 text-ink-2`}>No tienes presupuestos esperando tu revisión.</p>
+      ) : (
+        <ul className={`${tarjeta} divide-y divide-line`}>
+          {filas.map((f) => (
+            <li key={f.departamentoId} className="flex flex-wrap items-center gap-x-6 gap-y-3 px-6 py-4">
+              <div className="min-w-0 flex-1">
+                <p className="text-lg font-semibold">{f.departamento}</p>
+                <p className={ayuda}>
+                  Enviado el {fecha(f.enviadoEn)} · {plural(f.programas, 'programa', 'programas')} · {plural(f.lineas, 'ítem', 'ítems')}
+                </p>
+              </div>
+              <p className="text-xl font-semibold">{money(f.formulado)}</p>
+              <Link href={`/formulacion/${f.departamentoId}`} className={boton.primario}>
+                Revisar {f.departamento}<IconoFlecha className="size-4" />
+              </Link>
+            </li>
           ))}
-        </div>
+        </ul>
       )}
+    </section>
+  );
+}
 
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(168px,1fr))] gap-3">
-        <TarjetaCifra titulo="Formulado" valor={money(formulado)}
-          nota={`${filas.filter((f) => f.lineas > 0).length} departamentos con líneas`} />
-        <TarjetaCifra titulo="Aprobados" valor={`${cuenta('aprobado')} de ${filas.length}`} nota={money(aprobado)} />
-        <TarjetaCifra titulo="En revisión" valor={String(cuenta('enviado'))} nota="enviados a Dirección" />
-        <TarjetaCifra titulo="En preparación" valor={String(cuenta('borrador') + cuenta('devuelto'))}
-          nota={cuenta('devuelto') === 1 ? '1 devuelto con comentarios' : `${cuenta('devuelto')} devueltos con comentarios`} />
-        <TarjetaCifra titulo="Sin iniciar" valor={String(cuenta(null))} nota="todavía sin programas" />
+function TarjetaProyeccion({
+  anio, filas, departamentos,
+}: { anio: number; filas: Awaited<ReturnType<typeof proyeccionColegio>>; departamentos: number }) {
+  const total = filas.reduce((s, f) => s + f.total, 0);
+  const sinMes = filas.reduce((s, f) => s + f.sinMes, 0);
+  return (
+    <section aria-labelledby="proyeccion" className={`${tarjeta} flex flex-wrap items-center gap-x-6 gap-y-4 p-6`}>
+      <div className="min-w-0 flex-1">
+        <h2 id="proyeccion" className={titulo}>Proyección mensual {anio}</h2>
+        <p className="mt-1 text-ink-2">
+          {filas.length === 0
+            ? 'Todavía no hay presupuestos aprobados.'
+            : `${filas.length} de ${departamentos} departamentos aprobados · ${money(total)}${sinMes > 0 ? ` · ${money(sinMes)} todavía sin mes` : ''}`}
+        </p>
       </div>
+      <div className="flex flex-wrap gap-2">
+        <Link href="/proyeccion" className={boton.primario}>Ver la proyección<IconoFlecha className="size-4" /></Link>
+        {filas.length > 0 && (
+          <a href="/proyeccion/exportar" download className={boton.secundario}>
+            <IconoDescarga className="size-4" />Descargar para Excel
+          </a>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function EstadoFormulacion({ filas, anio }: { filas: ResumenPresupuesto[]; anio: number }) {
+  return (
+    <section aria-labelledby="formulacion">
+      <div className="mb-4 flex flex-wrap items-baseline gap-x-4 gap-y-1">
+        <h2 id="formulacion" className={titulo}>Presupuestos {anio}</h2>
+        <Link href="/formulacion" className="text-[15px] font-medium text-accent hover:underline">Ver todos los departamentos</Link>
+      </div>
+      <ResumenFormulacion filas={filas} />
     </section>
   );
 }
 
 function PendientesDireccion({ pendientes }: { pendientes: Awaited<ReturnType<typeof pendientesDeDireccion>> }) {
   return (
-    <section className="mb-8">
-      <h2 className={`${titulo} mb-1`}>Pendientes de pedido</h2>
-      <p className="mb-3.5 text-sm text-ink-3">
-        Órdenes que no cupieron en el disponible de su departamento. Su resolución se hace desde la etapa 2,
-        que viene después.
+    <section aria-labelledby="pendientes">
+      <h2 id="pendientes" className={`${titulo} mb-1`}>Pendientes de pedido</h2>
+      <p className={`${ayuda} mb-4`}>
+        Órdenes que no cupieron en el disponible de su departamento. Se resolverán desde la etapa 2, que viene después.
       </p>
       <div className={`${tarjeta} divide-y divide-line`}>
         {pendientes.map((p) => (
-          <div key={p.id} className="flex flex-wrap items-start gap-3 px-4 py-3">
-            <IconoAlerta className="mt-0.5 size-4 text-warn" />
+          <div key={p.id} className="flex flex-wrap items-start gap-3 px-6 py-4">
+            <IconoAlerta className="mt-0.5 size-5 text-warn" />
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium">{p.departamento} · <span className="font-mono">{p.folio}</span></p>
-              {p.observacion && <p className="text-sm text-ink-2">{p.observacion}</p>}
-              <p className="mt-0.5 text-xs text-ink-3">Desde el {fecha(p.creadoEn)}</p>
+              <p className="font-semibold">{p.departamento} · <span className="font-normal text-ink-2">orden {p.folio}</span></p>
+              {p.observacion && <p className="text-ink-2">{p.observacion}</p>}
+              <p className="mt-0.5 text-sm text-ink-2">Desde el {fecha(p.creadoEn)}</p>
             </div>
-            <div className="text-right text-sm">
-              <p className="tabular font-mono">{money(p.monto)}</p>
-              <p className="text-xs text-warn">excede en {money(p.excedido)}</p>
+            <div className="text-right">
+              <p className="tabular font-semibold">{money(p.monto)}</p>
+              <p className="text-sm text-warn">excede en {money(p.excedido)}</p>
             </div>
           </div>
         ))}
@@ -201,23 +265,29 @@ function PendientesDireccion({ pendientes }: { pendientes: Awaited<ReturnType<ty
   );
 }
 
+// ---------------------------------------------------------------------
+// Ejecución del año en curso
+// ---------------------------------------------------------------------
+
 function Ejecucion({ sesion, saldos, anio }: { sesion: Sesion; saldos: SaldoDepartamento[]; anio: number }) {
   const total = totalizar(saldos);
   const usado = pct(total.comprometido + total.ejecutado, total.vigente);
   const verReal = esContabilidad(sesion) || esDireccion(sesion);
 
   const titular = sesion.veTodoElColegio
-    ? `Ejecución ${anio}`
-    : `Ejecución ${anio} · ${saldos.map((s) => s.departamento).join(' y ') || 'sin departamento'}`;
+    ? `Presupuesto ${anio} en curso`
+    : `Presupuesto ${anio} en curso · ${saldos.map((s) => s.departamento).join(' y ') || 'sin departamento'}`;
 
   return (
-    <section className="mb-8">
-      <div className="mb-3.5 flex flex-wrap items-baseline gap-3">
-        <h2 className={titulo}>{titular}</h2>
-        <p className="text-[13px] text-ink-3">Disponible = vigente − comprometido − ejecutado, a precio presupuesto</p>
+    <section aria-labelledby="ejecucion">
+      <div className="mb-4">
+        <h2 id="ejecucion" className={titulo}>{titular}</h2>
+        <p className={`${ayuda} mt-1`}>
+          Lo que queda: el presupuesto vigente, menos lo comprometido (órdenes por comprar) y lo ejecutado (ya comprado).
+        </p>
       </div>
 
-      <div className="mb-4 grid grid-cols-[repeat(auto-fit,minmax(168px,1fr))] gap-3">
+      <div className="mb-4 grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
         <TarjetaCifra titulo="Presupuesto vigente" valor={money(total.vigente)}
           nota={total.modificaciones ? `incluye ${money(total.modificaciones)} en modificaciones` : 'sin modificaciones'} />
         <TarjetaCifra titulo="Comprometido" valor={money(total.comprometido)} nota="órdenes emitidas, por comprar" />
@@ -231,7 +301,7 @@ function Ejecucion({ sesion, saldos, anio }: { sesion: Sesion; saldos: SaldoDepa
         )}
       </div>
 
-      <div className={`${tarjeta} mb-4 p-4`}>
+      <div className={`${tarjeta} mb-4 p-5`}>
         <BarraSaldo {...total} />
         <Leyenda />
       </div>
@@ -239,7 +309,7 @@ function Ejecucion({ sesion, saldos, anio }: { sesion: Sesion; saldos: SaldoDepa
       {saldos.length > 1 && (
         <div className={`${tarjeta} overflow-hidden`}>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] border-collapse text-sm">
+            <table className="w-full min-w-[820px] border-collapse">
               <thead>
                 <tr className="bg-surface-2">
                   <th className={th}>Departamento</th>
@@ -255,10 +325,10 @@ function Ejecucion({ sesion, saldos, anio }: { sesion: Sesion; saldos: SaldoDepa
                 {saldos.map((s) => (
                   <tr key={s.departamentoId}>
                     <td className={td}>
-                      {s.departamento}
+                      <span className="font-medium">{s.departamento}</span>
                       {s.pendientes > 0 && (
-                        <span className="ml-2 inline-flex items-center gap-1 text-xs text-warn">
-                          <IconoAlerta className="size-3.5" />{s.pendientes} pendiente
+                        <span className="ml-2 inline-flex items-center gap-1 text-sm text-warn">
+                          <IconoAlerta className="size-4" />{s.pendientes} pendiente
                         </span>
                       )}
                     </td>
@@ -274,7 +344,7 @@ function Ejecucion({ sesion, saldos, anio }: { sesion: Sesion; saldos: SaldoDepa
                     <td className={td}>
                       <div className="min-w-[120px]">
                         <BarraSaldo {...s} />
-                        <span className="mt-1 block text-[11px] text-ink-3">
+                        <span className="mt-1 block text-[13px] text-ink-2">
                           {pct(s.comprometido + s.ejecutado, s.vigente)}% usado
                         </span>
                       </div>

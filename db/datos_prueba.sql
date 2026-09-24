@@ -294,7 +294,7 @@ BEGIN
     SELECT p_programa, c.articulo_id, c.nombre, p_cantidad, c.precio_referencia, c.cuenta_contable_id,
            CASE WHEN c.ofertas = 1
                 THEN (SELECT pv.tienda FROM vw_precio_vigente pv WHERE pv.articulo_id = c.articulo_id)
-                ELSE 'Mediana de ' || c.ofertas || ' ofertas' END
+                ELSE 'Precio del medio entre ' || c.ofertas || ' ofertas' END
            || ' al ' || to_char(c.actualizado_en AT TIME ZONE 'America/Santiago', 'DD-MM-YYYY')
       FROM vw_catalogo_articulo c
      WHERE lower(c.nombre) = lower(p_articulo)

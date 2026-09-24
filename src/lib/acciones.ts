@@ -1,3 +1,4 @@
+import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
 import { sql } from 'drizzle-orm';
@@ -70,39 +71,78 @@ export function mensajeDeError(e: unknown): string {
   return 'No se pudo completar la operación. Revisa los datos e intenta de nuevo.';
 }
 
+/** Lo que devuelve una acción: el mensaje y, si conviene, a qué parte de la página volver. */
+export type Resultado = string | { mensaje: string; ancla?: string };
+
+/** El error de la última acción viaja en esta cookie de un solo uso (ver `responder`). */
+export const COOKIE_ERROR = 'gesemco_error';
+
 /**
- * Ejecuta el trabajo y vuelve a `ruta` con el resultado en la URL, para que
- * la página lo muestre. Funciona sin JavaScript en el navegador.
+ * Ejecuta el trabajo y avisa el resultado. Funciona sin JavaScript en el navegador.
+ *
+ * - Si sale bien, vuelve a `ruta` con ?ok= en la URL. La ruta puede traer un
+ *   #ancla (la fila que se editó) y el trabajo también puede fijarla cuando
+ *   recién sabe adónde volver (el programa que acaba de crear). Los
+ *   formularios abiertos se cierran, porque ya se guardó.
+ * - Si sale mal, no cambia de página: el error llega en una cookie y la página
+ *   se vuelve a dibujar en el mismo lugar, con los formularios abiertos y lo
+ *   que la persona escribió, para que corrija sin tipear todo de nuevo.
  */
-export async function responder(ruta: string, trabajo: () => Promise<string>): Promise<never> {
-  let resultado: string;
+export async function responder(ruta: string, trabajo: () => Promise<Resultado>): Promise<void> {
+  const [base, anclaDeRuta] = ruta.split('#');
+  const almacen = await cookies();
+  let r: Resultado;
   try {
-    resultado = `ok=${encodeURIComponent(await trabajo())}`;
+    r = await trabajo();
   } catch (e) {
-    resultado = `error=${encodeURIComponent(mensajeDeError(e))}`;
+    almacen.set(COOKIE_ERROR, encodeURIComponent(JSON.stringify({ mensaje: mensajeDeError(e), t: Date.now() })), {
+      path: '/', maxAge: 120, sameSite: 'lax',
+    });
+    revalidatePath(base.split('?')[0]);
+    return;
   }
-  revalidatePath(ruta.split('?')[0]);
-  redirect(`${ruta}${ruta.includes('?') ? '&' : '?'}${resultado}`);
+
+  almacen.delete(COOKIE_ERROR);
+  const { mensaje, ancla } = typeof r === 'string' ? { mensaje: r, ancla: anclaDeRuta } : { ancla: anclaDeRuta, ...r };
+  revalidatePath(base.split('?')[0]);
+  // t distingue dos avisos iguales seguidos, para que el segundo también se vea.
+  redirect(`${base}${base.includes('?') ? '&' : '?'}ok=${encodeURIComponent(mensaje)}&t=${Date.now()}${ancla ? `#${ancla}` : ''}`);
 }
 
 // ---------------------------------------------------------------------
 // Lectura de formularios
 // ---------------------------------------------------------------------
 
+// Cómo se nombra cada campo en los mensajes: nunca el nombre técnico del formulario.
+const NOMBRE_CAMPO: Record<string, string> = {
+  nombre: 'el nombre',
+  descripcion: 'la descripción',
+  comentario: 'el comentario',
+  origen: 'de dónde sale el precio',
+  cantidad: 'la cantidad',
+  precio: 'el precio',
+};
+
+const nombreCampo = (campo: string) => NOMBRE_CAMPO[campo] ?? campo;
+const conMayuscula = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+
 export function texto(form: FormData, campo: string, { obligatorio = false, max = 500 } = {}): string {
   const valor = String(form.get(campo) ?? '').trim();
-  if (obligatorio && !valor) throw new ErrorDeUsuario(`Falta completar: ${campo}.`);
-  if (valor.length > max) throw new ErrorDeUsuario(`El campo ${campo} es demasiado largo.`);
+  if (obligatorio && !valor) throw new ErrorDeUsuario(`Falta completar ${nombreCampo(campo)}.`);
+  if (valor.length > max) {
+    throw new ErrorDeUsuario(`${conMayuscula(nombreCampo(campo))} es demasiado largo: máximo ${max} caracteres.`);
+  }
   return valor;
 }
 
 export function enteroDe(form: FormData, campo: string, { min = 0 } = {}): number {
-  // Acepta "12.500" o "12500": en Chile el punto separa miles.
+  // Acepta "12.500", "$12.500" o "12500": en Chile el punto separa miles.
   const crudo = String(form.get(campo) ?? '').replace(/[.\s$]/g, '').trim();
   const n = Number(crudo);
-  if (!crudo || !Number.isInteger(n)) throw new ErrorDeUsuario(`${campo} tiene que ser un número entero.`);
-  if (n < min) throw new ErrorDeUsuario(`${campo} tiene que ser al menos ${min}.`);
-  if (n > 2_000_000_000) throw new ErrorDeUsuario(`${campo} es demasiado grande.`);
+  const nombre = conMayuscula(nombreCampo(campo));
+  if (!crudo || !Number.isInteger(n)) throw new ErrorDeUsuario(`${nombre} tiene que ser un número entero, sin decimales.`);
+  if (n < min) throw new ErrorDeUsuario(`${nombre} tiene que ser al menos ${min}.`);
+  if (n > 2_000_000_000) throw new ErrorDeUsuario(`${nombre} es demasiado grande.`);
   return n;
 }
 

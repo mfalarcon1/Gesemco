@@ -1,7 +1,7 @@
 import { and, asc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import {
   db, vwCatalogoArticulo, vwPrecioVigente, categoriaArticulo,
-  presupuestoDepartamento, programa, productoTienda,
+  presupuestoDepartamento, programa, productoTienda, lineaPresupuesto,
 } from '@/db';
 import { num } from './consultas';
 import { fechaNumerica } from './formato';
@@ -103,14 +103,15 @@ export async function productosSinClasificar(): Promise<number> {
 
 /**
  * Datos con los que se crea una línea desde el catálogo: el precio es la
- * mediana de las ofertas vigentes, y queda anotado de dónde salió.
+ * mediana de las ofertas vigentes (el "precio del medio", como se le explica
+ * a los jefes), y queda anotado de dónde salió.
  */
 export async function precioParaLinea(articuloId: number) {
   const [a] = await db.select().from(vwCatalogoArticulo).where(eq(vwCatalogoArticulo.articuloId, articuloId));
   if (!a || a.precioReferencia === null) return null;
 
   const ofertas = num(a.ofertas);
-  let origen = `Mediana de ${ofertas} ofertas`;
+  let origen = `Precio del medio entre ${ofertas} ofertas`;
   if (ofertas === 1) {
     const [unica] = await db.select({ tienda: vwPrecioVigente.tienda })
       .from(vwPrecioVigente).where(eq(vwPrecioVigente.articuloId, articuloId));
@@ -126,7 +127,7 @@ export async function precioParaLinea(articuloId: number) {
   };
 }
 
-export type Destino = { programaId: number; programa: string };
+export type Destino = { programaId: number; programa: string; items: number; total: number };
 
 /**
  * A qué programas puede agregar artículos este usuario: los del presupuesto
@@ -148,10 +149,35 @@ export async function destinosDelJefe(sesion: Sesion): Promise<{
   if (!pres) return { estado: null, editable: true, programas: [] };
 
   const programas = await db
-    .select({ programaId: programa.id, programa: programa.nombre })
+    .select({
+      programaId: programa.id,
+      programa: programa.nombre,
+      items: sql<number>`count(${lineaPresupuesto.id})`,
+      total: sql<number>`coalesce(sum(${lineaPresupuesto.subtotal}), 0)`,
+    })
     .from(programa)
+    .leftJoin(lineaPresupuesto, eq(lineaPresupuesto.programaId, programa.id))
     .where(eq(programa.presupuestoId, pres.id))
+    .groupBy(programa.id, programa.nombre, programa.creadoEn)
     .orderBy(asc(programa.creadoEn), asc(programa.id));
 
-  return { estado: pres.estado, editable: esEditable(pres.estado), programas };
+  return {
+    estado: pres.estado,
+    editable: esEditable(pres.estado),
+    programas: programas.map((p) => ({ ...p, items: num(p.items), total: num(p.total) })),
+  };
+}
+
+/**
+ * Cuántas unidades de cada artículo del catálogo tiene ya un programa, para
+ * que el jefe vea en el catálogo lo que ya agregó y no lo repita sin querer.
+ * Quien llama se asegura de que el programa sea del jefe.
+ */
+export async function cantidadesEnPrograma(programaId: number): Promise<Map<number, number>> {
+  const filas = await db
+    .select({ articuloId: lineaPresupuesto.articuloId, cantidad: sql<number>`sum(${lineaPresupuesto.cantidad})` })
+    .from(lineaPresupuesto)
+    .where(and(eq(lineaPresupuesto.programaId, programaId), sql`${lineaPresupuesto.articuloId} is not null`))
+    .groupBy(lineaPresupuesto.articuloId);
+  return new Map(filas.map((f) => [f.articuloId!, num(f.cantidad)]));
 }

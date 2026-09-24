@@ -48,9 +48,9 @@ export function ColumnasMensuales({ meses, descripcion }: { meses: number[]; des
     <figure className="m-0" aria-label={descripcion}>
       <div className="flex gap-2">
         {/* Eje Y: solo marcas redondas, en tinta apagada */}
-        <div className="relative w-14 shrink-0 text-right text-[11px] text-ink-3 tabular" style={{ height: ALTO }}>
+        <div className="relative w-16 shrink-0 text-right text-xs text-ink-2 tabular" style={{ height: ALTO }}>
           {marcas.map((m) => (
-            <span key={m} className="absolute right-0 -translate-y-1/2 font-mono"
+            <span key={m} className="absolute right-0 -translate-y-1/2"
               style={{ top: ALTO - (m / tope) * ALTO }}>
               {m === 0 ? '$0' : compacto(m)}
             </span>
@@ -89,7 +89,7 @@ export function ColumnasMensuales({ meses, descripcion }: { meses: number[]; des
 
                     {/* Etiqueta directa solo en el mes más alto */}
                     {i === pico && activo === null && (
-                      <span className="pointer-events-none absolute whitespace-nowrap text-[11px] font-medium text-ink-2"
+                      <span className="pointer-events-none absolute whitespace-nowrap text-xs font-semibold text-ink"
                         style={{ bottom: alto + 4 }}>
                         {compacto(monto)}
                       </span>
@@ -100,7 +100,7 @@ export function ColumnasMensuales({ meses, descripcion }: { meses: number[]; des
                         className="pointer-events-none absolute z-10 whitespace-nowrap rounded-lg border border-line bg-surface px-2.5 py-1.5 text-left shadow-sm"
                         style={{ bottom: Math.min(alto + 8, ALTO - 36) }}>
                         <b className="block text-sm font-semibold text-ink">{PESOS.format(monto)}</b>
-                        <span className="block text-[11px] text-ink-3">{MESES_LARGOS[i]}</span>
+                        <span className="block text-xs text-ink-2">{MESES_LARGOS[i]}</span>
                       </div>
                     )}
                   </div>
@@ -110,7 +110,7 @@ export function ColumnasMensuales({ meses, descripcion }: { meses: number[]; des
           </div>
 
           {/* Eje X, dentro del contenedor para que nunca quede cortado */}
-          <div className="mt-1.5 flex text-[11px] text-ink-3">
+          <div className="mt-1.5 flex text-xs text-ink-2">
             {MESES.map((m) => <span key={m} className="flex-1 text-center">{m}</span>)}
           </div>
         </div>
