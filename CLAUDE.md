@@ -19,7 +19,7 @@ vivo: el helper `num()` de `src/lib/consultas.ts`, que convierte los `numeric` d
 ## Modelo de dominio
 
 ```
-Colegio → Departamento (por área, con jefe) → presupuesto anual → Programa → Línea (artículo × cantidad × precio × meses)
+Colegio → Departamento (por área, con jefe) → presupuesto anual → Programa (en un periodo) → Línea (artículo × cantidad × precio)
 ```
 
 Departamentos: formación, matemática, física, historia, inglés, lenguaje, biblioteca,
@@ -33,13 +33,22 @@ Cada año pasa por `formulacion → ejecucion → cerrado`. Conviven dos: se eje
 mientras se formula el siguiente (la sesión trae `anioFormulacion` y `anioEjecucion`).
 
 **Etapa 1 — formulación (construida)**
+- Se formula entre septiembre y noviembre del año anterior (`anio_presupuestario.formulacion_hasta`,
+  solo informativo: no bloquea nada).
+- El año tiene tres periodos (tabla `periodo`): 1 marzo–mayo, 2 junio–agosto, 3
+  septiembre–diciembre. Cada programa va en un periodo; uno que sigue en varios se ingresa
+  en cada uno, con lo que necesita ahí. No hay desglose mensual.
 - El jefe arma programas con líneas del catálogo (precio = mediana de las ofertas
   vigentes, congelado en la línea) o líneas libres (fuera de catálogo).
-- `presupuesto_departamento`: borrador → enviado → aprobado | devuelto → enviado. El jefe
-  puede retirar un envío. La negociación con Dirección es en reunión, fuera del sistema.
-- Aprobar congela `monto_aprobado`. Después el jefe escribe cuántas unidades de cada línea
-  necesita en cada mes (`linea_calendario`; la cantidad es libre y puede quedar a medias)
-  → proyección mensual para GESEMCO. Informativa: no bloquea compras.
+- `presupuesto_departamento`: borrador → enviado → revision_contabilidad → aprobado.
+  Dirección puede devolverlo (devuelto → enviado) y el jefe retirar el envío (→ borrador).
+  Contabilidad puede enviar reparos (con_reparos): el jefe corrige y lo reenvía **directo
+  a contabilidad**, sin pasar otra vez por Dirección. La negociación con Dirección es en
+  reunión, fuera del sistema.
+- La aprobación de contabilidad congela `monto_aprobado`. Lo aprobado arma las **órdenes de
+  compra de cada periodo** (`vw_orden_periodo`): tres al año, del colegio completo, con el
+  detalle de cada departamento. No son filas de `orden_compra`: esa es la orden de la
+  etapa 2, que emite el jefe.
 
 **Etapa 2 — ejecución (en la base, sin pantallas todavía)**
 - Profesor → `solicitud_compra` → jefe emite `orden_compra` → `equipo_compra` compra
@@ -52,18 +61,23 @@ mientras se formula el siguiente (la sesión trae `anioFormulacion` y `anioEjecu
   `modificacion_presupuestaria` por lo que falte y emite; denegar exige explicación y
   avisa al jefe.
 - Ítems sin línea del presupuesto quedan `no_planificado`. Una sola bolsa por colegio.
+- Pendiente para cuando se construyan sus pantallas: en cada periodo se compra la orden
+  de ese periodo **más** los extras que pidieron los jefes y que se aprobaron hasta
+  entonces. El disponible sigue siendo el total del año.
 
 ## Invariantes que viven en la base: no las dupliques en la app
 
 - `fn_guardia_anio_cerrado` (triggers `trg_a_…`): un año cerrado no admite cambios.
-- `fn_guardia_presupuesto_editable`: programas y líneas solo cambian en borrador o devuelto.
-- `fn_transicion_presupuesto`: transiciones válidas, no enviar vacío, congelar el aprobado.
-- `fn_calendario_cuadra`: los meses no suman más que la línea; bajar la cantidad bajo lo
-  repartido reinicia los meses de esa línea.
+- `fn_guardia_presupuesto_editable`: programas y líneas solo cambian en borrador, devuelto
+  o con reparos.
+- `fn_transicion_presupuesto`: transiciones válidas, no enviar vacío (tampoco al reenviar
+  tras reparos), fechas de cada revisión, congelar el aprobado.
+- `fn_avisar_presupuesto`: los avisos de cada paso (a Dirección, a contabilidad, al jefe).
 - `fn_transicion_orden` + `fn_efectos_orden`: la regla del disponible, el pendiente de
   pedido y los avisos. Una orden nace en borrador; sus ítems solo cambian en borrador.
 - `fn_bitacora` (triggers `trg_z_…`): auditoría de todo lo que cambia de estado.
-- Saldos, proyección y catálogo salen de vistas (`vw_…`). **Nunca guardes un saldo.**
+- Saldos, montos por periodo, órdenes de compra y catálogo salen de vistas (`vw_…`).
+  **Nunca guardes un saldo.**
 
 Los triggers del mismo evento corren en orden alfabético: guardias `trg_a_`/`trg_b_`,
 efectos `trg_z_`.
@@ -78,6 +92,9 @@ efectos `trg_z_`.
   `comoUsuario`, y `responder(ruta, …)` vuelve con `?ok=` o `?error=`. Los mensajes de los
   `RAISE EXCEPTION` ya están escritos para el usuario y se muestran tal cual; para
   restricciones con nombre técnico, agrega el texto en `POR_RESTRICCION`.
+- La base decide qué transición es válida; la app, quién la hace. A revisión de contabilidad
+  se llega por dos caminos de roles distintos (Dirección aprueba lo enviado; el jefe reenvía
+  lo que tenía reparos): `cambiarEstado(..., desde)` exige el estado de partida.
 - Permisos por `rol_asignado`, nunca por nombre de persona. Helpers en `src/lib/sesion.ts`
   (`esJefeDe`, `esDireccion`, `puedeVerDepartamento`…). Se consultan en la página y se
   vuelven a exigir en la acción.
@@ -103,9 +120,10 @@ Algunos jefes de departamento usan poco el computador. Por eso:
 - Texto base de 16px y nunca menos de 13px. Botones de al menos 44px de alto: usa las
   clases de `boton` en `ui.ts`. Una acción principal por pantalla.
 - Cada pantalla dice qué hacer ahora: `Pasos` muestra las tres etapas del presupuesto
-  (`pasosDe` en `src/lib/etapas.ts`) y debajo va una tarjeta con la acción que toca.
+  (armar, revisión de Dirección, revisión de contabilidad: `pasosDe` en `src/lib/etapas.ts`)
+  y debajo va una tarjeta con la acción que toca.
 - Lo que no se deshace pregunta antes (`BotonConConfirmacion`): quitar un ítem, eliminar
-  un programa, aprobar un presupuesto.
+  un programa, aprobar un presupuesto (Dirección y contabilidad).
 - Los estados van en palabras, no solo en color: píldoras con ícono y texto.
 - Vocabulario de la pantalla (el código y la base siguen con sus nombres):
   | En la base | En la pantalla |
@@ -114,11 +132,15 @@ Algunos jefes de departamento usan poco el computador. Por eso:
   | línea libre, `fuera_catalogo` | ítem agregado a mano, "Fuera del catálogo" |
   | formulado | total (o "total pedido") |
   | mediana de las ofertas | precio del medio |
-  | calendarizar | indicar los meses |
+  | `revision_contabilidad`, `con_reparos` | En revisión de contabilidad, Con reparos |
+  | `vw_orden_periodo` | orden de compra del periodo |
 - Montos que escribe una persona: `CampoPesos` (separador de miles mientras tipea).
   Cantidades con botones − y +: `CampoCantidad`.
-- Los meses se indican en una sola grilla para todo el presupuesto
-  (`/formulacion/[id]/meses`, `GrillaMeses`), no ítem por ítem.
+- El presupuesto se ve por periodo: un resumen con el total de cada uno y una sección por
+  periodo con sus programas. Al crear un programa se sugieren los que el departamento ya
+  tiene en otros periodos, para no tipearlos de nuevo.
+- En celular las listas de ítems son tarjetas y las tablas largas van dentro de un
+  contenedor con scroll (con `relative` si llevan texto `sr-only`, que es absoluto).
 - Las fuentes vienen de `@fontsource-variable` (Archivo e IBM Plex Sans), empaquetadas
   con la app: no dependen de internet.
 

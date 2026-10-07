@@ -1,12 +1,15 @@
 -- =====================================================================
 --  GESEMCO · Sistema de gestión presupuestaria escolar
 --  Esquema relacional · PostgreSQL 15 o superior
---  v0.2 · 24 de septiembre de 2026 · modelo de dos etapas
+--  v0.3 · 7 de octubre de 2026 · formulación por periodos
 --
---  Etapa 1, formulación. Cada departamento arma sus programas con
---  líneas de artículos (del catálogo tipo marketplace o líneas libres),
---  Dirección aprueba o devuelve, y el jefe reparte las líneas en los
---  meses del año para proyectar la caja que necesita GESEMCO.
+--  Etapa 1, formulación (de septiembre a noviembre del año anterior).
+--  El año se divide en tres periodos. Cada departamento arma, en cada
+--  periodo, sus programas con líneas de artículos (del catálogo tipo
+--  marketplace o líneas libres). Dirección aprueba o devuelve; después
+--  contabilidad aprueba o envía reparos, que el jefe corrige y reenvía
+--  directo a contabilidad. Lo aprobado forma las tres órdenes de compra
+--  del colegio, una por periodo.
 --
 --  Etapa 2, ejecución. El profesor solicita, el jefe emite la orden de
 --  compra y el equipo de compra compra y registra el monto real. El
@@ -40,7 +43,8 @@ CREATE TYPE etapa_anio         AS ENUM ('formulacion', 'ejecucion', 'cerrado');
 CREATE TYPE rol_sistema        AS ENUM ('profesor', 'jefe_departamento', 'direccion',
                                         'contabilidad', 'equipo_compra', 'administrador');
 
-CREATE TYPE estado_presupuesto AS ENUM ('borrador', 'enviado', 'devuelto', 'aprobado');
+CREATE TYPE estado_presupuesto AS ENUM ('borrador', 'enviado', 'devuelto',
+                                        'revision_contabilidad', 'con_reparos', 'aprobado');
 
 CREATE TYPE estado_solicitud   AS ENUM ('borrador', 'enviada', 'aprobada', 'rechazada', 'anulada');
 
@@ -81,17 +85,21 @@ CREATE TABLE anio_presupuestario (
     id              serial      PRIMARY KEY,
     colegio_id      integer     NOT NULL REFERENCES colegio (id),
     anio            smallint    NOT NULL,
-    etapa           etapa_anio  NOT NULL DEFAULT 'formulacion',
-    fecha_apertura  date        NOT NULL DEFAULT CURRENT_DATE,
-    fecha_cierre    date,
+    etapa              etapa_anio  NOT NULL DEFAULT 'formulacion',
+    fecha_apertura     date        NOT NULL DEFAULT CURRENT_DATE,
+    formulacion_hasta  date,
+    fecha_cierre       date,
 
     CONSTRAINT uq_anio_colegio  UNIQUE (colegio_id, anio),
     CONSTRAINT ck_anio_rango    CHECK (anio BETWEEN 2020 AND 2100),
-    CONSTRAINT ck_anio_cierre   CHECK ((etapa = 'cerrado') = (fecha_cierre IS NOT NULL))
+    CONSTRAINT ck_anio_cierre   CHECK ((etapa = 'cerrado') = (fecha_cierre IS NOT NULL)),
+    CONSTRAINT ck_anio_plazo    CHECK (formulacion_hasta IS NULL OR formulacion_hasta >= fecha_apertura)
 );
 
 COMMENT ON TABLE anio_presupuestario IS
-    'formulacion: los departamentos arman su presupuesto y Dirección lo aprueba. ejecucion: se compra contra lo aprobado. cerrado: inmutable. Mientras se ejecuta un año se formula el siguiente, así que conviven dos años abiertos.';
+    'formulacion: los departamentos arman su presupuesto, Dirección y contabilidad lo aprueban. ejecucion: se compra contra lo aprobado. cerrado: inmutable. Mientras se ejecuta un año se formula el siguiente, así que conviven dos años abiertos.';
+COMMENT ON COLUMN anio_presupuestario.formulacion_hasta IS
+    'Hasta cuándo se formula: la formulación va de comienzos de septiembre a fines de noviembre del año anterior. Informativo; no bloquea nada.';
 
 
 CREATE TABLE usuario (
@@ -248,17 +256,38 @@ COMMENT ON COLUMN precio_observado.con_iva IS
 -- 4. Etapa 1 · Formulación
 -- ---------------------------------------------------------------------
 
+CREATE TABLE periodo (
+    numero     smallint  PRIMARY KEY CHECK (numero BETWEEN 1 AND 3),
+    nombre     text      NOT NULL UNIQUE,
+    mes_desde  smallint  NOT NULL,
+    mes_hasta  smallint  NOT NULL,
+
+    CONSTRAINT ck_periodo_meses CHECK (mes_desde BETWEEN 1 AND 12 AND mes_hasta BETWEEN mes_desde AND 12)
+);
+
+COMMENT ON TABLE periodo IS
+    'Los tres periodos del año escolar. Enero y febrero no pertenecen a ninguno. Si cambian, se cambian aquí y en src/lib/periodos.ts, que los nombra en la interfaz.';
+
+INSERT INTO periodo (numero, nombre, mes_desde, mes_hasta) VALUES
+    (1, 'Periodo 1',  3,  5),   -- marzo a mayo
+    (2, 'Periodo 2',  6,  8),   -- junio a agosto
+    (3, 'Periodo 3',  9, 12);   -- septiembre a diciembre
+
+
 CREATE TABLE presupuesto_departamento (
-    id                    serial              PRIMARY KEY,
-    departamento_id       integer             NOT NULL REFERENCES departamento (id),
-    anio_id               integer             NOT NULL REFERENCES anio_presupuestario (id),
-    estado                estado_presupuesto  NOT NULL DEFAULT 'borrador',
-    monto_aprobado        bigint              CHECK (monto_aprobado >= 0),
-    enviado_en            timestamptz,
-    resuelto_en           timestamptz,
-    resuelto_por          integer             REFERENCES usuario (id),
-    comentario_direccion  text,
-    creado_en             timestamptz         NOT NULL DEFAULT now(),
+    id                         serial              PRIMARY KEY,
+    departamento_id            integer             NOT NULL REFERENCES departamento (id),
+    anio_id                    integer             NOT NULL REFERENCES anio_presupuestario (id),
+    estado                     estado_presupuesto  NOT NULL DEFAULT 'borrador',
+    monto_aprobado             bigint              CHECK (monto_aprobado >= 0),
+    enviado_en                 timestamptz,
+    resuelto_direccion_en      timestamptz,
+    resuelto_direccion_por     integer             REFERENCES usuario (id),
+    comentario_direccion       text,
+    resuelto_contabilidad_en   timestamptz,
+    resuelto_contabilidad_por  integer             REFERENCES usuario (id),
+    comentario_contabilidad    text,
+    creado_en                  timestamptz         NOT NULL DEFAULT now(),
 
     CONSTRAINT uq_presupuesto_depto_anio UNIQUE (departamento_id, anio_id),
     -- El monto aprobado existe si y solo si el presupuesto está aprobado.
@@ -266,26 +295,34 @@ CREATE TABLE presupuesto_departamento (
     -- Dirección siempre explica por qué devuelve.
     CONSTRAINT ck_devuelto_con_comentario CHECK (
         estado <> 'devuelto' OR nullif(btrim(comentario_direccion), '') IS NOT NULL
+    ),
+    -- Contabilidad siempre dice qué hay que corregir.
+    CONSTRAINT ck_reparos_con_comentario CHECK (
+        estado <> 'con_reparos' OR nullif(btrim(comentario_contabilidad), '') IS NOT NULL
     )
 );
 
 COMMENT ON TABLE presupuesto_departamento IS
-    'Presupuesto anual de un departamento. borrador → enviado → aprobado, o enviado → devuelto → enviado… El jefe puede retirar un envío (enviado → borrador). Al aprobar se congela monto_aprobado; lo que venga después son modificaciones presupuestarias.';
+    'Presupuesto anual de un departamento. borrador → enviado (Dirección lo revisa) → revision_contabilidad → aprobado. Dirección puede devolverlo (enviado → devuelto → enviado) y contabilidad enviar reparos (revision_contabilidad → con_reparos → revision_contabilidad, sin volver a Dirección). El jefe puede retirar un envío a Dirección (enviado → borrador). Lo aprueba contabilidad: ahí se congela monto_aprobado y lo que venga después son modificaciones presupuestarias.';
+COMMENT ON COLUMN presupuesto_departamento.enviado_en IS
+    'Último envío del jefe: a Dirección o, después de reparos, a contabilidad.';
 
 
 CREATE TABLE programa (
     id              serial       PRIMARY KEY,
     presupuesto_id  integer      NOT NULL REFERENCES presupuesto_departamento (id) ON DELETE CASCADE,
+    periodo         smallint     NOT NULL REFERENCES periodo (numero),
     nombre          text         NOT NULL,
     descripcion     text,
     creado_por      integer      REFERENCES usuario (id),
     creado_en       timestamptz  NOT NULL DEFAULT now()
 );
 
-CREATE UNIQUE INDEX uq_programa_nombre ON programa (presupuesto_id, lower(nombre));
+-- El mismo programa puede estar en varios periodos, pero una sola vez en cada uno.
+CREATE UNIQUE INDEX uq_programa_nombre ON programa (presupuesto_id, periodo, lower(nombre));
 
 COMMENT ON TABLE programa IS
-    'Lo que el departamento planea hacer en el año (una olimpiada, una salida, el material de un ciclo), con el desglose de lo que necesita en sus líneas.';
+    'Lo que el departamento hará en un periodo (una olimpiada, una salida, el material de las clases), con lo que necesita en sus líneas. Un programa que sigue en otro periodo se vuelve a ingresar en ese periodo, con lo que necesitará ahí.';
 
 
 CREATE TABLE linea_presupuesto (
@@ -309,19 +346,6 @@ COMMENT ON COLUMN linea_presupuesto.precio_unitario IS
     'Precio presupuesto, con IVA. Se congela al agregar la línea: si el catálogo cambia después, la línea no se mueve.';
 COMMENT ON COLUMN linea_presupuesto.origen_precio IS
     'De dónde salió el precio, para quien revise: "Mediana de 3 ofertas al 24-09-2026", "Cotización del proveedor", "Ajustado por el jefe".';
-
-
-CREATE TABLE linea_calendario (
-    id        serial    PRIMARY KEY,
-    linea_id  integer   NOT NULL REFERENCES linea_presupuesto (id) ON DELETE CASCADE,
-    mes       smallint  NOT NULL CHECK (mes BETWEEN 1 AND 12),
-    cantidad  integer   NOT NULL CHECK (cantidad > 0),
-
-    CONSTRAINT uq_linea_mes UNIQUE (linea_id, mes)
-);
-
-COMMENT ON TABLE linea_calendario IS
-    'En qué mes se necesita cada parte de una línea. La suma no puede pasar la cantidad de la línea; lo que falte aparece como "sin mes" en la proyección. Es informativo: no bloquea compras.';
 
 
 -- ---------------------------------------------------------------------
@@ -536,7 +560,7 @@ CREATE INDEX ix_articulo_categoria     ON articulo (categoria_id);
 CREATE INDEX ix_producto_articulo      ON producto_tienda (articulo_id);
 CREATE INDEX ix_precio_producto_fecha  ON precio_observado (producto_tienda_id, observado_en DESC);
 CREATE INDEX ix_presupuesto_anio       ON presupuesto_departamento (anio_id);
-CREATE INDEX ix_programa_presupuesto   ON programa (presupuesto_id);
+CREATE INDEX ix_programa_presupuesto   ON programa (presupuesto_id, periodo);
 CREATE INDEX ix_linea_programa         ON linea_presupuesto (programa_id);
 CREATE INDEX ix_linea_articulo         ON linea_presupuesto (articulo_id);
 CREATE INDEX ix_solicitud_presupuesto  ON solicitud_compra (presupuesto_id);
@@ -635,11 +659,19 @@ SELECT
     ap.id                               AS anio_id,
     ap.anio,
     ap.etapa,
+    ap.formulacion_hasta,
     pd.id                               AS presupuesto_id,
     pd.estado,
     pd.enviado_en,
-    pd.resuelto_en,
+    pd.resuelto_direccion_en,
     pd.comentario_direccion,
+    pd.resuelto_contabilidad_en,
+    pd.comentario_contabilidad,
+    -- Desde cuándo lo tiene contabilidad: desde que lo aprobó Dirección o
+    -- desde que el jefe lo reenvió con los reparos corregidos.
+    CASE WHEN pd.estado = 'revision_contabilidad'
+         THEN GREATEST(pd.resuelto_direccion_en, pd.enviado_en) END
+                                        AS en_contabilidad_desde,
     COALESCE(l.programas, 0)            AS programas,
     COALESCE(l.lineas, 0)               AS lineas,
     COALESCE(l.formulado, 0)            AS formulado,
@@ -713,42 +745,64 @@ COMMENT ON VIEW vw_saldo_departamento IS
     'desviacion = lo pagado de verdad por las órdenes compradas − lo que esas órdenes descontaron a precio presupuesto. Positiva: se pagó más de lo presupuestado.';
 
 
--- 8.5 La proyección mensual de caja que recibe GESEMCO.
-CREATE VIEW vw_proyeccion_mensual AS
+-- 8.5 Cuánto pide cada departamento en cada periodo. Incluye todos los
+--     estados: la aplicación decide si muestra solo lo aprobado.
+CREATE VIEW vw_proyeccion_periodo AS
 SELECT
-    pd.id                                         AS presupuesto_id,
+    pd.id                          AS presupuesto_id,
     d.colegio_id,
-    d.id                                          AS departamento_id,
-    d.nombre                                      AS departamento,
-    ap.id                                         AS anio_id,
+    d.id                           AS departamento_id,
+    d.nombre                       AS departamento,
+    d.centro_costo,
+    ap.id                          AS anio_id,
     ap.anio,
     pd.estado,
-    lc.mes,
-    sum(lc.cantidad::bigint * l.precio_unitario)  AS monto
-FROM linea_calendario lc
-JOIN linea_presupuesto        l  ON l.id  = lc.linea_id
+    p.periodo,
+    count(DISTINCT p.id)           AS programas,
+    count(l.id)                    AS lineas,
+    COALESCE(sum(l.subtotal), 0)   AS monto
+FROM programa p
+JOIN presupuesto_departamento pd ON pd.id = p.presupuesto_id
+JOIN departamento             d  ON d.id  = pd.departamento_id
+JOIN anio_presupuestario      ap ON ap.id = pd.anio_id
+LEFT JOIN linea_presupuesto   l  ON l.programa_id = p.id
+GROUP BY pd.id, d.id, ap.id, p.periodo;
+
+
+-- 8.6 Las órdenes de compra que recibe GESEMCO: una por periodo, del
+--     colegio completo, con el detalle de cada departamento. Son las
+--     líneas de los presupuestos aprobados por contabilidad.
+CREATE VIEW vw_orden_periodo AS
+SELECT
+    ap.colegio_id,
+    ap.id                AS anio_id,
+    ap.anio,
+    p.periodo,
+    d.id                 AS departamento_id,
+    d.nombre             AS departamento,
+    d.centro_costo,
+    pd.id                AS presupuesto_id,
+    p.id                 AS programa_id,
+    p.nombre             AS programa,
+    l.id                 AS linea_id,
+    l.articulo_id,
+    l.descripcion,
+    l.cantidad,
+    l.precio_unitario,
+    l.subtotal,
+    l.fuera_catalogo,
+    cc.codigo            AS cuenta_codigo,
+    cc.nombre            AS cuenta_nombre
+FROM linea_presupuesto        l
 JOIN programa                 p  ON p.id  = l.programa_id
 JOIN presupuesto_departamento pd ON pd.id = p.presupuesto_id
 JOIN departamento             d  ON d.id  = pd.departamento_id
 JOIN anio_presupuestario      ap ON ap.id = pd.anio_id
-GROUP BY pd.id, d.id, ap.id, lc.mes;
+LEFT JOIN cuenta_contable     cc ON cc.id = l.cuenta_contable_id
+WHERE pd.estado = 'aprobado';
 
-
--- 8.6 Cuánto de cada línea ya tiene mes asignado.
-CREATE VIEW vw_calendarizacion_linea AS
-SELECT
-    l.id                                                        AS linea_id,
-    l.programa_id,
-    p.presupuesto_id,
-    l.cantidad,
-    COALESCE(sum(lc.cantidad), 0)                               AS cantidad_con_mes,
-    l.cantidad - COALESCE(sum(lc.cantidad), 0)                  AS cantidad_sin_mes,
-    (l.cantidad - COALESCE(sum(lc.cantidad), 0))::bigint * l.precio_unitario
-                                                                AS monto_sin_mes
-FROM linea_presupuesto l
-JOIN programa p ON p.id = l.programa_id
-LEFT JOIN linea_calendario lc ON lc.linea_id = l.id
-GROUP BY l.id, p.id;
+COMMENT ON VIEW vw_orden_periodo IS
+    'Una fila por línea de un presupuesto aprobado. Filtrada por año y periodo es la orden de compra de ese periodo. Montos a precio presupuesto, con IVA.';
 
 
 -- 8.7 El consolidado del colegio que hoy contabilidad arma a mano.
@@ -789,7 +843,21 @@ CREATE FUNCTION fn_pesos(p_monto bigint) RETURNS text AS $$
 $$ LANGUAGE sql IMMUTABLE;
 
 
--- 9.3 Aviso a todos los usuarios vigentes con un rol. Con departamento,
+-- 9.3 El estado de un presupuesto como se dice en la pantalla, para los
+--      mensajes de error que ve el usuario.
+CREATE FUNCTION fn_nombre_estado(p_estado estado_presupuesto) RETURNS text AS $$
+    SELECT CASE p_estado
+        WHEN 'borrador'              THEN 'en preparación'
+        WHEN 'enviado'               THEN 'en revisión de Dirección'
+        WHEN 'devuelto'              THEN 'devuelto por Dirección'
+        WHEN 'revision_contabilidad' THEN 'en revisión de contabilidad'
+        WHEN 'con_reparos'           THEN 'con reparos de contabilidad'
+        WHEN 'aprobado'              THEN 'aprobado'
+    END;
+$$ LANGUAGE sql IMMUTABLE;
+
+
+-- 9.4 Aviso a todos los usuarios vigentes con un rol. Con departamento,
 --     solo a los de ese departamento.
 CREATE FUNCTION fn_notificar_rol(
     p_colegio_id      integer,
@@ -811,7 +879,7 @@ CREATE FUNCTION fn_notificar_rol(
 $$ LANGUAGE sql;
 
 
--- 9.4 Folio correlativo por año y tipo de documento, a prueba de
+-- 9.5 Folio correlativo por año y tipo de documento, a prueba de
 --     concurrencia: 'OC-2027-0001', 'SC-2027-0001'.
 CREATE FUNCTION fn_folio(p_prefijo text, p_presupuesto_id integer) RETURNS text AS $$
 DECLARE
@@ -839,7 +907,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 
--- 9.5 A qué año presupuestario pertenece una fila de cualquier tabla del
+-- 9.6 A qué año presupuestario pertenece una fila de cualquier tabla del
 --     presupuesto. Trabaja sobre jsonb para servir a todas las tablas
 --     con una sola función. Devuelve null si no lo puede resolver (por
 --     ejemplo, en un borrado en cascada donde el padre ya no existe).
@@ -918,8 +986,6 @@ CREATE TRIGGER trg_a_anio_programa BEFORE INSERT OR UPDATE OR DELETE ON programa
     FOR EACH ROW EXECUTE FUNCTION fn_guardia_anio_cerrado();
 CREATE TRIGGER trg_a_anio_linea BEFORE INSERT OR UPDATE OR DELETE ON linea_presupuesto
     FOR EACH ROW EXECUTE FUNCTION fn_guardia_anio_cerrado();
-CREATE TRIGGER trg_a_anio_calendario BEFORE INSERT OR UPDATE OR DELETE ON linea_calendario
-    FOR EACH ROW EXECUTE FUNCTION fn_guardia_anio_cerrado();
 CREATE TRIGGER trg_a_anio_modificacion BEFORE INSERT OR UPDATE OR DELETE ON modificacion_presupuestaria
     FOR EACH ROW EXECUTE FUNCTION fn_guardia_anio_cerrado();
 CREATE TRIGGER trg_a_anio_solicitud BEFORE INSERT OR UPDATE OR DELETE ON solicitud_compra
@@ -936,9 +1002,9 @@ CREATE TRIGGER trg_a_anio_recepcion BEFORE INSERT OR UPDATE OR DELETE ON recepci
     FOR EACH ROW EXECUTE FUNCTION fn_guardia_anio_cerrado();
 
 
--- 10.2 Programas y líneas solo se tocan mientras el presupuesto está en
---      borrador o devuelto. Enviado espera a Dirección; aprobado quedó
---      congelado (los meses se siguen pudiendo asignar: son otra tabla).
+-- 10.2 Programas y líneas solo se tocan mientras el jefe tiene el
+--      presupuesto: en preparación, devuelto por Dirección o con reparos
+--      de contabilidad. Mientras lo revisan, o ya aprobado, quedan fijos.
 CREATE FUNCTION fn_guardia_presupuesto_editable() RETURNS trigger AS $$
 DECLARE
     v_fila         jsonb;
@@ -964,10 +1030,9 @@ BEGIN
       JOIN departamento d ON d.id = pd.departamento_id
      WHERE pd.id = v_presupuesto;
 
-    IF v_estado IN ('enviado', 'aprobado') THEN
-        RAISE EXCEPTION 'El presupuesto de % está %: no se pueden cambiar sus programas ni sus líneas',
-            v_depto,
-            CASE v_estado WHEN 'enviado' THEN 'en revisión de Dirección' ELSE 'aprobado' END
+    IF v_estado IN ('enviado', 'revision_contabilidad', 'aprobado') THEN
+        RAISE EXCEPTION 'El presupuesto de % está %: no se pueden cambiar sus programas ni sus ítems',
+            v_depto, fn_nombre_estado(v_estado)
             USING ERRCODE = 'check_violation';
     END IF;
 
@@ -984,50 +1049,18 @@ CREATE TRIGGER trg_b_editable_linea BEFORE INSERT OR UPDATE OR DELETE ON linea_p
     FOR EACH ROW EXECUTE FUNCTION fn_guardia_presupuesto_editable();
 
 
--- 10.3 Los meses de una línea no pueden sumar más que la línea.
-CREATE FUNCTION fn_calendario_cuadra() RETURNS trigger AS $$
-DECLARE
-    v_total  integer;
-    v_otros  integer;
-BEGIN
-    -- Bloquea la línea para que dos repartos simultáneos no se pasen.
-    SELECT cantidad INTO v_total FROM linea_presupuesto WHERE id = NEW.linea_id FOR UPDATE;
-
-    SELECT COALESCE(sum(cantidad), 0) INTO v_otros
-      FROM linea_calendario
-     WHERE linea_id = NEW.linea_id
-       AND id IS DISTINCT FROM NEW.id;
-
-    IF v_otros + NEW.cantidad > v_total THEN
-        RAISE EXCEPTION 'La línea tiene % unidades y ya hay % repartidas en otros meses: no caben % más',
-            v_total, v_otros, NEW.cantidad
-            USING ERRCODE = 'check_violation';
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_b_calendario_cuadra BEFORE INSERT OR UPDATE ON linea_calendario
-    FOR EACH ROW EXECUTE FUNCTION fn_calendario_cuadra();
-
-
--- 10.4 Si el jefe baja la cantidad de una línea por debajo de lo que ya
---      repartió en meses, el reparto de esa línea se reinicia. Solo pasa
---      en borrador o devuelto, porque aprobada la línea no cambia.
-CREATE FUNCTION fn_reiniciar_calendario() RETURNS trigger AS $$
-BEGIN
-    IF (SELECT COALESCE(sum(cantidad), 0) FROM linea_calendario WHERE linea_id = NEW.id) > NEW.cantidad THEN
-        DELETE FROM linea_calendario WHERE linea_id = NEW.id;
-    END IF;
-    RETURN NULL;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_z_linea_reinicia_calendario AFTER UPDATE OF cantidad ON linea_presupuesto
-    FOR EACH ROW EXECUTE FUNCTION fn_reiniciar_calendario();
-
-
--- 10.5 Ciclo de vida del presupuesto de un departamento.
+-- 10.3 Ciclo de vida del presupuesto de un departamento.
+--
+--        borrador ──► enviado ──► revision_contabilidad ──► aprobado
+--           ▲   jefe     │  Dirección      │        contabilidad
+--           └─ retira ───┤ aprueba         │
+--                        ▼                 ▼
+--                    devuelto          con_reparos
+--               (vuelve a enviado)  (vuelve a revision_contabilidad,
+--                                    sin pasar por Dirección)
+--
+--      Quién hace cada paso lo exige la aplicación por rol; acá se
+--      cuidan las transiciones, los comentarios y el monto congelado.
 CREATE FUNCTION fn_transicion_presupuesto() RETURNS trigger AS $$
 DECLARE
     v_lineas  integer;
@@ -1043,9 +1076,12 @@ BEGIN
 
     IF NOT (
         (OLD.estado IN ('borrador', 'devuelto') AND NEW.estado = 'enviado') OR
-        (OLD.estado = 'enviado' AND NEW.estado IN ('aprobado', 'devuelto', 'borrador'))
+        (OLD.estado = 'enviado'                 AND NEW.estado IN ('revision_contabilidad', 'devuelto', 'borrador')) OR
+        (OLD.estado = 'revision_contabilidad'   AND NEW.estado IN ('aprobado', 'con_reparos')) OR
+        (OLD.estado = 'con_reparos'             AND NEW.estado = 'revision_contabilidad')
     ) THEN
-        RAISE EXCEPTION 'Un presupuesto no puede pasar de % a %', OLD.estado, NEW.estado
+        RAISE EXCEPTION 'Ese cambio no corresponde: el presupuesto está % y no puede quedar %',
+            fn_nombre_estado(OLD.estado), fn_nombre_estado(NEW.estado)
             USING ERRCODE = 'check_violation';
     END IF;
 
@@ -1054,24 +1090,44 @@ BEGIN
       JOIN linea_presupuesto l ON l.programa_id = p.id
      WHERE p.presupuesto_id = NEW.id;
 
-    IF NEW.estado = 'enviado' THEN
+    -- El jefe envía: a Dirección, o directo a contabilidad después de los reparos.
+    IF NEW.estado = 'enviado' OR (OLD.estado = 'con_reparos' AND NEW.estado = 'revision_contabilidad') THEN
         IF v_lineas = 0 THEN
-            RAISE EXCEPTION 'No se puede enviar un presupuesto sin líneas'
+            RAISE EXCEPTION 'No se puede enviar un presupuesto sin ítems'
                 USING ERRCODE = 'check_violation';
         END IF;
-        NEW.enviado_en   := now();
-        NEW.resuelto_en  := NULL;
-        NEW.resuelto_por := NULL;
+        NEW.enviado_en := now();
+    END IF;
+
+    IF NEW.estado = 'enviado' THEN
+        NEW.resuelto_direccion_en  := NULL;
+        NEW.resuelto_direccion_por := NULL;
+
+    ELSIF NEW.estado = 'devuelto' THEN
+        NEW.resuelto_direccion_en  := now();
+        NEW.resuelto_direccion_por := COALESCE(NEW.resuelto_direccion_por, fn_usuario_actual());
+
+    ELSIF NEW.estado = 'revision_contabilidad' AND OLD.estado = 'enviado' THEN
+        -- Dirección lo aprobó: pasa a contabilidad.
+        NEW.resuelto_direccion_en     := now();
+        NEW.resuelto_direccion_por    := COALESCE(NEW.resuelto_direccion_por, fn_usuario_actual());
+        NEW.resuelto_contabilidad_en  := NULL;
+        NEW.resuelto_contabilidad_por := NULL;
+
+    ELSIF NEW.estado = 'revision_contabilidad' THEN
+        -- El jefe corrigió los reparos y lo reenvió. La aprobación de Dirección se mantiene.
+        NEW.resuelto_contabilidad_en  := NULL;
+        NEW.resuelto_contabilidad_por := NULL;
+
+    ELSIF NEW.estado = 'con_reparos' THEN
+        NEW.resuelto_contabilidad_en  := now();
+        NEW.resuelto_contabilidad_por := COALESCE(NEW.resuelto_contabilidad_por, fn_usuario_actual());
 
     ELSIF NEW.estado = 'aprobado' THEN
         -- Se congela lo que suman las líneas en este momento.
-        NEW.monto_aprobado := v_total;
-        NEW.resuelto_en    := now();
-        NEW.resuelto_por   := COALESCE(NEW.resuelto_por, fn_usuario_actual());
-
-    ELSIF NEW.estado = 'devuelto' THEN
-        NEW.resuelto_en    := now();
-        NEW.resuelto_por   := COALESCE(NEW.resuelto_por, fn_usuario_actual());
+        NEW.monto_aprobado            := v_total;
+        NEW.resuelto_contabilidad_en  := now();
+        NEW.resuelto_contabilidad_por := COALESCE(NEW.resuelto_contabilidad_por, fn_usuario_actual());
 
     ELSIF NEW.estado = 'borrador' THEN
         -- El jefe retiró el envío para seguir editando.
@@ -1105,14 +1161,35 @@ BEGIN
         PERFORM fn_notificar_rol(v_colegio, 'direccion', NULL,
             'Presupuesto ' || v_anio || ' de ' || v_depto || ' listo para revisar',
             NULL, v_enlace);
-    ELSIF NEW.estado = 'aprobado' THEN
-        PERFORM fn_notificar_rol(v_colegio, 'jefe_departamento', NEW.departamento_id,
-            'Dirección aprobó el presupuesto ' || v_anio || ' de ' || v_depto,
-            'Ahora indica cuántas unidades de cada línea necesitas en cada mes.', v_enlace);
+
     ELSIF NEW.estado = 'devuelto' THEN
         PERFORM fn_notificar_rol(v_colegio, 'jefe_departamento', NEW.departamento_id,
             'Dirección devolvió el presupuesto ' || v_anio || ' de ' || v_depto,
             NEW.comentario_direccion, v_enlace);
+
+    ELSIF NEW.estado = 'revision_contabilidad' AND OLD.estado = 'enviado' THEN
+        PERFORM fn_notificar_rol(v_colegio, 'contabilidad', NULL,
+            'Presupuesto ' || v_anio || ' de ' || v_depto || ' listo para revisar',
+            'Dirección ya lo aprobó.', v_enlace);
+        PERFORM fn_notificar_rol(v_colegio, 'jefe_departamento', NEW.departamento_id,
+            'Dirección aprobó el presupuesto ' || v_anio || ' de ' || v_depto,
+            'Ahora lo revisa contabilidad.', v_enlace);
+
+    ELSIF NEW.estado = 'revision_contabilidad' THEN
+        PERFORM fn_notificar_rol(v_colegio, 'contabilidad', NULL,
+            v_depto || ' corrigió los reparos del presupuesto ' || v_anio,
+            'Está listo para revisar de nuevo.', v_enlace);
+
+    ELSIF NEW.estado = 'con_reparos' THEN
+        PERFORM fn_notificar_rol(v_colegio, 'jefe_departamento', NEW.departamento_id,
+            'Contabilidad envió reparos al presupuesto ' || v_anio || ' de ' || v_depto,
+            NEW.comentario_contabilidad, v_enlace);
+
+    ELSIF NEW.estado = 'aprobado' THEN
+        PERFORM fn_notificar_rol(v_colegio, 'jefe_departamento', NEW.departamento_id,
+            'Contabilidad aprobó el presupuesto ' || v_anio || ' de ' || v_depto,
+            'Quedó fijo en ' || fn_pesos(NEW.monto_aprobado)
+                || ' y sus ítems entran a las órdenes de compra de cada periodo.', v_enlace);
     END IF;
     RETURN NULL;
 END;
@@ -1122,7 +1199,7 @@ CREATE TRIGGER trg_z_avisa_presupuesto AFTER UPDATE OF estado ON presupuesto_dep
     FOR EACH ROW EXECUTE FUNCTION fn_avisar_presupuesto();
 
 
--- 10.6 Los ítems de una orden solo cambian en borrador, y el total de la
+-- 10.4 Los ítems de una orden solo cambian en borrador, y el total de la
 --      orden es siempre la suma de sus ítems.
 CREATE FUNCTION fn_guardia_item_orden() RETURNS trigger AS $$
 DECLARE
@@ -1165,7 +1242,7 @@ CREATE TRIGGER trg_z_item_recalcula_total AFTER INSERT OR UPDATE OR DELETE ON it
     FOR EACH ROW EXECUTE FUNCTION fn_recalcular_total_orden();
 
 
--- 10.7 La regla central de la ejecución. Cuando el jefe emite una orden
+-- 10.5 La regla central de la ejecución. Cuando el jefe emite una orden
 --      (borrador → emitida), la base decide: si cabe en el disponible del
 --      departamento, queda emitida y pasa al equipo de compra; si no,
 --      queda pendiente_direccion y se crea el pendiente de pedido.
@@ -1318,7 +1395,7 @@ CREATE TRIGGER trg_z_efectos_orden AFTER UPDATE OF estado ON orden_compra
     FOR EACH ROW EXECUTE FUNCTION fn_efectos_orden();
 
 
--- 10.8 Compras y recepciones, solo sobre órdenes que ya salieron.
+-- 10.6 Compras y recepciones, solo sobre órdenes que ya salieron.
 CREATE FUNCTION fn_guardia_compra() RETURNS trigger AS $$
 DECLARE
     v_estado estado_orden;
@@ -1342,7 +1419,7 @@ CREATE TRIGGER trg_b_guardia_recepcion BEFORE INSERT OR UPDATE ON recepcion
     FOR EACH ROW EXECUTE FUNCTION fn_guardia_compra();
 
 
--- 10.9 Bitácora automática. Trabaja sobre jsonb para que la misma
+-- 10.7 Bitácora automática. Trabaja sobre jsonb para que la misma
 --      función sirva para cualquier tabla, tenga o no columna estado.
 CREATE FUNCTION fn_bitacora() RETURNS trigger AS $$
 DECLARE

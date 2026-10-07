@@ -3,10 +3,10 @@ import { SelectorUsuario } from './selector-usuario';
 import { boton, tituloPagina } from './ui';
 import { iniciales } from '@/lib/formato';
 import {
-  participaEnFormulacion, usuariosDisponibles, veProyeccion, type Sesion,
+  participaEnFormulacion, usuariosDisponibles, veOrdenesDeCompra, type Sesion,
 } from '@/lib/sesion';
 
-export type Seccion = 'inicio' | 'formulacion' | 'catalogo' | 'proyeccion';
+export type Seccion = 'inicio' | 'formulacion' | 'catalogo' | 'ordenes';
 
 function enlaces(sesion: Sesion): { seccion: Seccion; href: string; texto: string }[] {
   const lista: { seccion: Seccion; href: string; texto: string }[] = [
@@ -21,8 +21,8 @@ function enlaces(sesion: Sesion): { seccion: Seccion; href: string; texto: strin
     });
   }
   lista.push({ seccion: 'catalogo', href: '/catalogo', texto: 'Catálogo' });
-  if (sesion.anioFormulacion && veProyeccion(sesion)) {
-    lista.push({ seccion: 'proyeccion', href: '/proyeccion', texto: 'Proyección mensual' });
+  if (sesion.anioFormulacion && veOrdenesDeCompra(sesion)) {
+    lista.push({ seccion: 'ordenes', href: '/ordenes-de-compra', texto: `Órdenes de compra ${sesion.anioFormulacion.anio}` });
   }
   return lista;
 }

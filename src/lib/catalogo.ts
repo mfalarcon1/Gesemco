@@ -127,11 +127,12 @@ export async function precioParaLinea(articuloId: number) {
   };
 }
 
-export type Destino = { programaId: number; programa: string; items: number; total: number };
+export type Destino = { programaId: number; periodo: number; programa: string; items: number; total: number };
 
 /**
  * A qué programas puede agregar artículos este usuario: los del presupuesto
- * de su departamento en el año en formulación, mientras sea editable.
+ * de su departamento en el año en formulación, mientras sea editable. Van
+ * ordenados por periodo, porque el mismo programa puede estar en varios.
  */
 export async function destinosDelJefe(sesion: Sesion): Promise<{
   estado: EstadoPresupuesto | null; editable: boolean; programas: Destino[];
@@ -151,6 +152,7 @@ export async function destinosDelJefe(sesion: Sesion): Promise<{
   const programas = await db
     .select({
       programaId: programa.id,
+      periodo: programa.periodo,
       programa: programa.nombre,
       items: sql<number>`count(${lineaPresupuesto.id})`,
       total: sql<number>`coalesce(sum(${lineaPresupuesto.subtotal}), 0)`,
@@ -158,8 +160,8 @@ export async function destinosDelJefe(sesion: Sesion): Promise<{
     .from(programa)
     .leftJoin(lineaPresupuesto, eq(lineaPresupuesto.programaId, programa.id))
     .where(eq(programa.presupuestoId, pres.id))
-    .groupBy(programa.id, programa.nombre, programa.creadoEn)
-    .orderBy(asc(programa.creadoEn), asc(programa.id));
+    .groupBy(programa.id, programa.periodo, programa.nombre, programa.creadoEn)
+    .orderBy(asc(programa.periodo), asc(programa.creadoEn), asc(programa.id));
 
   return {
     estado: pres.estado,

@@ -6,11 +6,10 @@ import { BotonConConfirmacion } from './confirmar';
 import { CampoPesos } from './campos';
 import { COLUMNAS_ITEM, type ModoItem } from './columnas-item';
 import { FueraDeCatalogo } from './pildoras';
-import { IconoAlerta, IconoBasura, IconoLapiz, IconoOk } from './iconos';
+import { IconoBasura, IconoLapiz } from './iconos';
 import { boton, campo, etiqueta } from './ui';
 
 const PESOS = new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 });
-const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 
 export type ItemVista = {
   id: number;
@@ -21,8 +20,6 @@ export type ItemVista = {
   fueraCatalogo: boolean;
   origenPrecio: string | null;
   cuenta: string | null;
-  meses: { mes: number; cantidad: number }[];
-  cantidadSinMes: number;
 };
 
 /**
@@ -80,30 +77,7 @@ export function ItemPresupuesto({
           </form>
         </div>
       )}
-
-      {modo === 'meses' && <MesesDelItem item={item} />}
     </li>
-  );
-}
-
-function MesesDelItem({ item }: { item: ItemVista }) {
-  const reparto = [...item.meses].sort((a, b) => a.mes - b.mes);
-  return (
-    <div className="text-sm">
-      {reparto.length > 0 ? (
-        <p className="text-ink">{reparto.map((m) => `${MESES[m.mes - 1]} ${m.cantidad}`).join(' · ')}</p>
-      ) : (
-        <p className="text-ink-2">Sin meses todavía</p>
-      )}
-      {reparto.length > 0 && item.cantidadSinMes > 0 && (
-        <p className="mt-0.5 flex items-center gap-1 text-warn">
-          <IconoAlerta className="size-4" />{item.cantidadSinMes === 1 ? 'Falta 1 sin mes' : `Faltan ${item.cantidadSinMes} sin mes`}
-        </p>
-      )}
-      {reparto.length > 0 && item.cantidadSinMes === 0 && (
-        <p className="mt-0.5 flex items-center gap-1 text-ok"><IconoOk className="size-4" />Listo</p>
-      )}
-    </div>
   );
 }
 

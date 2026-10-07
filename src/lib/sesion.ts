@@ -9,7 +9,8 @@ export type Rol =
   | 'equipo_compra' | 'jefe_departamento' | 'profesor';
 
 export type Departamento = { id: number; nombre: string };
-export type Anio = { id: number; anio: number };
+/** formulacionHasta: hasta cuándo se formula ese año (solo informativo). */
+export type Anio = { id: number; anio: number; formulacionHasta: string | null };
 
 export type Sesion = {
   usuario: { id: number; nombre: string; email: string; colegioId: number };
@@ -121,7 +122,12 @@ export async function getSesion(): Promise<Sesion | null> {
   const clases = asignaciones.filter((a) => a.rol === 'profesor' && a.departamentoId);
 
   const anios = await db
-    .select({ id: anioPresupuestario.id, anio: anioPresupuestario.anio, etapa: anioPresupuestario.etapa })
+    .select({
+      id: anioPresupuestario.id,
+      anio: anioPresupuestario.anio,
+      etapa: anioPresupuestario.etapa,
+      formulacionHasta: anioPresupuestario.formulacionHasta,
+    })
     .from(anioPresupuestario)
     .where(and(
       eq(anioPresupuestario.colegioId, quien.colegioId),
@@ -129,9 +135,9 @@ export async function getSesion(): Promise<Sesion | null> {
     ))
     .orderBy(desc(anioPresupuestario.anio));
 
-  const buscarAnio = (etapa: 'formulacion' | 'ejecucion') => {
+  const buscarAnio = (etapa: 'formulacion' | 'ejecucion'): Anio | null => {
     const a = anios.find((x) => x.etapa === etapa);
-    return a ? { id: a.id, anio: a.anio } : null;
+    return a ? { id: a.id, anio: a.anio, formulacionHasta: a.formulacionHasta } : null;
   };
 
   return {
@@ -171,5 +177,5 @@ export const puedeVerDepartamento = (s: Sesion, departamentoId: number) =>
 export const participaEnFormulacion = (s: Sesion) =>
   s.jefeDe !== null || tiene(s, 'direccion', 'contabilidad', 'administrador');
 
-/** La proyección mensual es para GESEMCO y Dirección. */
-export const veProyeccion = (s: Sesion) => tiene(s, 'direccion', 'contabilidad', 'administrador');
+/** Las órdenes de compra de cada periodo son para GESEMCO y Dirección. */
+export const veOrdenesDeCompra = (s: Sesion) => tiene(s, 'direccion', 'contabilidad', 'administrador');

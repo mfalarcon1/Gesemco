@@ -5,21 +5,25 @@ import { TarjetaCifra } from '@/components/tarjeta-cifra';
 import { EstadoPresupuestoPildora } from '@/components/pildoras';
 import { Pasos } from '@/components/pasos';
 import { ResumenFormulacion } from '@/components/resumen-formulacion';
-import { IconoAlerta, IconoCalendario, IconoDescarga, IconoFlecha } from '@/components/iconos';
+import { IconoAlerta, IconoDescarga, IconoFlecha } from '@/components/iconos';
 import { ayuda, boton, tarjeta, td, tdNum, th, titulo, tituloPagina } from '@/components/ui';
 import { esContabilidad, esDireccion, getSesion, type Sesion } from '@/lib/sesion';
 import {
   notificacionesRecientes, pendientesDeDireccion, saldosEjecucion, totalizar, type SaldoDepartamento,
 } from '@/lib/consultas';
 import {
-  avanceMeses, proyeccionColegio, resumenFormulacion, type EstadoPresupuesto, type ResumenPresupuesto,
+  montosPorPeriodo, resumenFormulacion, resumenOrdenes,
+  type EstadoPresupuesto, type FilaPeriodos, type PorPeriodo, type ResumenPresupuesto,
 } from '@/lib/formulacion';
-import { pasosDe, type Avance } from '@/lib/etapas';
+import { esperaRevision, pasosDe, ultimaNovedad } from '@/lib/etapas';
+import { PERIODOS } from '@/lib/periodos';
 import { fecha, money, pct, plural, primerNombre } from '@/lib/formato';
 
 // Las rutas que ya existen. Los avisos que apuntan a pantallas de la
 // etapa 2 (todavía en construcción) se muestran sin enlace.
-const RUTAS_ACTIVAS = ['/formulacion', '/catalogo', '/proyeccion'];
+const RUTAS_ACTIVAS = ['/formulacion', '/catalogo', '/ordenes-de-compra'];
+
+type Revisores = { direccion: boolean; contabilidad: boolean };
 
 export default async function Inicio() {
   const sesion = await getSesion();
@@ -30,20 +34,21 @@ export default async function Inicio() {
     : [...new Set([sesion.jefeDe?.id, ...sesion.profesorEn.map((d) => d.id)].filter((x): x is number => !!x))];
 
   const anioF = sesion.anioFormulacion;
-  const [saldos, formulacion, avisos, pendientes, proyeccion] = await Promise.all([
+  const revisores: Revisores = { direccion: esDireccion(sesion), contabilidad: esContabilidad(sesion) };
+  const [saldos, formulacion, avisos, pendientes, ordenes] = await Promise.all([
     sesion.anioEjecucion
       ? saldosEjecucion(sesion.colegio.id, sesion.anioEjecucion.id, departamentosPropios)
       : Promise.resolve([]),
     anioF ? resumenFormulacion(sesion.colegio.id, anioF.id) : Promise.resolve([]),
     notificacionesRecientes(sesion.usuario.id),
-    esDireccion(sesion) ? pendientesDeDireccion(sesion.colegio.id) : Promise.resolve([]),
-    anioF && esContabilidad(sesion) ? proyeccionColegio(sesion.colegio.id, anioF.id) : Promise.resolve(null),
+    revisores.direccion ? pendientesDeDireccion(sesion.colegio.id) : Promise.resolve([]),
+    anioF && revisores.contabilidad ? resumenOrdenes(sesion.colegio.id, anioF.id) : Promise.resolve(null),
   ]);
 
   const miFormulacion = sesion.jefeDe ? formulacion.find((f) => f.departamentoId === sesion.jefeDe!.id) : undefined;
-  const miAvance: Avance = miFormulacion?.presupuestoId && miFormulacion.estado === 'aprobado'
-    ? await avanceMeses(miFormulacion.presupuestoId)
-    : { listos: 0, total: 0 };
+  const misPeriodos: PorPeriodo = miFormulacion?.presupuestoId
+    ? await montosPorPeriodo(miFormulacion.presupuestoId)
+    : [0, 0, 0];
 
   const soloProfesor = !sesion.jefeDe && !sesion.veTodoElColegio;
 
@@ -60,15 +65,15 @@ export default async function Inicio() {
         </div>
 
         {sesion.jefeDe && miFormulacion && anioF && (
-          <MiPresupuesto resumen={miFormulacion} anio={anioF.anio} avance={miAvance} />
+          <MiPresupuesto resumen={miFormulacion} anio={anioF.anio} porPeriodo={misPeriodos} />
         )}
 
-        {esDireccion(sesion) && anioF && (
-          <ParaRevisar filas={formulacion.filter((f) => f.estado === 'enviado')} />
+        {(revisores.direccion || revisores.contabilidad) && anioF && (
+          <ParaRevisar filas={formulacion.filter((f) => esperaRevision(f, revisores))} revisores={revisores} />
         )}
 
-        {proyeccion && anioF && (
-          <TarjetaProyeccion anio={anioF.anio} filas={proyeccion} departamentos={formulacion.length} />
+        {ordenes && anioF && (
+          <TarjetaOrdenes anio={anioF.anio} filas={ordenes} departamentos={formulacion.length} />
         )}
 
         {sesion.veTodoElColegio && anioF && formulacion.length > 0 && (
@@ -120,21 +125,40 @@ export default async function Inicio() {
 // Jefe de departamento: su presupuesto y qué hacer ahora
 // ---------------------------------------------------------------------
 
-function MiPresupuesto({ resumen: r, anio, avance }: { resumen: ResumenPresupuesto; anio: number; avance: Avance }) {
+function MiPresupuesto({
+  resumen: r, anio, porPeriodo,
+}: { resumen: ResumenPresupuesto; anio: number; porPeriodo: PorPeriodo }) {
   const e = r.estado;
-  const mesesListos = avance.total > 0 && avance.listos === avance.total;
-  const presupuesto = `/formulacion/${r.departamentoId}`;
+  const reenviado = e === 'revision_contabilidad' && r.comentarioContabilidad !== null;
 
-  const ahora: Record<EstadoPresupuesto | 'sin_iniciar', { texto: string; boton: string; href: string }> = {
-    sin_iniciar: { texto: 'Empieza creando los programas que tu departamento hará el próximo año.', boton: 'Empezar mi presupuesto', href: presupuesto },
-    borrador: { texto: 'Sigue agregando lo que necesitas y, cuando termines, envíalo a Dirección.', boton: 'Seguir con mi presupuesto', href: presupuesto },
-    devuelto: { texto: 'Dirección te lo devolvió con un comentario: ajústalo y vuelve a enviarlo.', boton: 'Ver lo que pidió Dirección', href: presupuesto },
-    enviado: { texto: 'Dirección lo está revisando. Te llegará un aviso cuando lo resuelva.', boton: 'Ver mi presupuesto', href: presupuesto },
-    aprobado: mesesListos
-      ? { texto: 'Está aprobado y todo tiene sus meses. No tienes nada pendiente.', boton: 'Ver mi presupuesto', href: presupuesto }
-      : { texto: 'Está aprobado. Ahora indica en qué meses necesitas cada cosa.', boton: 'Indicar los meses', href: `${presupuesto}/meses` },
+  const ahora: Record<EstadoPresupuesto | 'sin_iniciar', { texto: string; boton: string }> = {
+    sin_iniciar: {
+      texto: 'Empieza eligiendo un periodo y creando los programas que tu departamento hará el próximo año.',
+      boton: 'Empezar mi presupuesto',
+    },
+    borrador: {
+      texto: 'Sigue agregando lo que necesitas en cada periodo y, cuando termines, envíalo a Dirección.',
+      boton: 'Seguir con mi presupuesto',
+    },
+    devuelto: { texto: 'Dirección te lo devolvió con un comentario: ajústalo y vuelve a enviarlo.', boton: 'Ver lo que pidió Dirección' },
+    enviado: { texto: 'Dirección lo está revisando. Te llegará un aviso cuando lo resuelva.', boton: 'Ver mi presupuesto' },
+    revision_contabilidad: {
+      texto: reenviado
+        ? 'Lo reenviaste con los reparos corregidos y contabilidad lo está revisando. Te llegará un aviso cuando lo resuelva.'
+        : 'Dirección lo aprobó y ahora lo revisa contabilidad. Te llegará un aviso cuando lo resuelva.',
+      boton: 'Ver mi presupuesto',
+    },
+    con_reparos: {
+      texto: 'Contabilidad te envió reparos: corrígelos y vuelve a enviárselo. Va directo a contabilidad, sin pasar otra vez por Dirección.',
+      boton: 'Ver los reparos',
+    },
+    aprobado: {
+      texto: 'Está aprobado y sus ítems entran a las órdenes de compra de cada periodo. No tienes nada pendiente.',
+      boton: 'Ver mi presupuesto',
+    },
   };
   const paso = ahora[e ?? 'sin_iniciar'];
+  const comentario = e === 'devuelto' ? r.comentarioDireccion : e === 'con_reparos' ? r.comentarioContabilidad : null;
 
   return (
     <section aria-labelledby="mi-presupuesto" className={`${tarjeta} p-6`}>
@@ -145,8 +169,11 @@ function MiPresupuesto({ resumen: r, anio, avance }: { resumen: ResumenPresupues
             <EstadoPresupuestoPildora estado={e} />
           </div>
           <p className="mt-1 text-[17px] text-ink">{paso.texto}</p>
-          {e === 'devuelto' && r.comentarioDireccion && (
-            <blockquote className="mt-2 border-l-4 border-warn/50 pl-4 text-ink-2">“{r.comentarioDireccion}”</blockquote>
+          {comentario && (
+            <blockquote className="mt-2 border-l-4 border-warn/50 pl-4 text-ink-2">“{comentario}”</blockquote>
+          )}
+          {e !== 'aprobado' && r.formulacionHasta && (
+            <p className={`${ayuda} mt-2`}>La formulación cierra el {fecha(r.formulacionHasta)}.</p>
           )}
         </div>
         <div className="text-right">
@@ -155,12 +182,22 @@ function MiPresupuesto({ resumen: r, anio, avance }: { resumen: ResumenPresupues
         </div>
       </div>
 
+      {e && (
+        <ul className="mt-4 flex flex-wrap gap-x-6 gap-y-1 text-[15px]" aria-label="Total de cada periodo">
+          {PERIODOS.map((p) => (
+            <li key={p.numero}>
+              <span className="text-ink-2">{p.nombre} ({p.meses}):</span>{' '}
+              <b className="font-semibold">{money(porPeriodo[p.numero - 1])}</b>
+            </li>
+          ))}
+        </ul>
+      )}
+
       <div className="mt-5">
-        <Pasos pasos={pasosDe(r, avance)} />
+        <Pasos pasos={pasosDe(r)} />
       </div>
 
-      <Link href={paso.href} className={`${boton.primario} mt-5`}>
-        {e === 'aprobado' && !mesesListos && <IconoCalendario className="size-5" />}
+      <Link href={`/formulacion/${r.departamentoId}`} className={`${boton.primario} mt-5`}>
         {paso.boton}<IconoFlecha className="size-4" />
       </Link>
     </section>
@@ -171,20 +208,31 @@ function MiPresupuesto({ resumen: r, anio, avance }: { resumen: ResumenPresupues
 // Dirección y contabilidad
 // ---------------------------------------------------------------------
 
-function ParaRevisar({ filas }: { filas: ResumenPresupuesto[] }) {
+/**
+ * Los presupuestos que esperan a quien mira: a Dirección, los enviados; a
+ * contabilidad, los que Dirección aprobó o volvieron con los reparos
+ * corregidos. El administrador ve ambos.
+ */
+function ParaRevisar({ filas, revisores }: { filas: ResumenPresupuesto[]; revisores: Revisores }) {
   return (
     <section aria-labelledby="para-revisar">
       <h2 id="para-revisar" className={`${titulo} mb-4`}>Para revisar</h2>
       {filas.length === 0 ? (
-        <p className={`${tarjeta} px-6 py-6 text-ink-2`}>No tienes presupuestos esperando tu revisión.</p>
+        <p className={`${tarjeta} px-6 py-6 text-ink-2`}>
+          No tienes presupuestos esperando tu revisión.
+          {revisores.contabilidad && !revisores.direccion && ' Te llegan cuando Dirección los aprueba.'}
+        </p>
       ) : (
         <ul className={`${tarjeta} divide-y divide-line`}>
           {filas.map((f) => (
             <li key={f.departamentoId} className="flex flex-wrap items-center gap-x-6 gap-y-3 px-6 py-4">
-              <div className="min-w-0 flex-1">
-                <p className="text-lg font-semibold">{f.departamento}</p>
+              <div className="min-w-[15rem] flex-1">
+                <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-lg font-semibold">
+                  {f.departamento}
+                  {revisores.direccion && revisores.contabilidad && <EstadoPresupuestoPildora estado={f.estado} />}
+                </p>
                 <p className={ayuda}>
-                  Enviado el {fecha(f.enviadoEn)} · {plural(f.programas, 'programa', 'programas')} · {plural(f.lineas, 'ítem', 'ítems')}
+                  {ultimaNovedad(f)} · {plural(f.programas, 'programa', 'programas')} · {plural(f.lineas, 'ítem', 'ítems')}
                 </p>
               </div>
               <p className="text-xl font-semibold">{money(f.formulado)}</p>
@@ -199,29 +247,45 @@ function ParaRevisar({ filas }: { filas: ResumenPresupuesto[] }) {
   );
 }
 
-function TarjetaProyeccion({
-  anio, filas, departamentos,
-}: { anio: number; filas: Awaited<ReturnType<typeof proyeccionColegio>>; departamentos: number }) {
-  const total = filas.reduce((s, f) => s + f.total, 0);
-  const sinMes = filas.reduce((s, f) => s + f.sinMes, 0);
+/** Para contabilidad: las tres órdenes de compra del año que se formula. */
+function TarjetaOrdenes({ anio, filas, departamentos }: { anio: number; filas: FilaPeriodos[]; departamentos: number }) {
+  const porPeriodo = PERIODOS.map((p) => filas.reduce((s, f) => s + f.periodos[p.numero - 1], 0));
+  const total = porPeriodo.reduce((s, x) => s + x, 0);
   return (
-    <section aria-labelledby="proyeccion" className={`${tarjeta} flex flex-wrap items-center gap-x-6 gap-y-4 p-6`}>
-      <div className="min-w-0 flex-1">
-        <h2 id="proyeccion" className={titulo}>Proyección mensual {anio}</h2>
-        <p className="mt-1 text-ink-2">
-          {filas.length === 0
-            ? 'Todavía no hay presupuestos aprobados.'
-            : `${filas.length} de ${departamentos} departamentos aprobados · ${money(total)}${sinMes > 0 ? ` · ${money(sinMes)} todavía sin mes` : ''}`}
-        </p>
+    <section aria-labelledby="ordenes" className={`${tarjeta} p-6`}>
+      <div className="flex flex-wrap items-start gap-x-6 gap-y-4">
+        <div className="min-w-[15rem] flex-1">
+          <h2 id="ordenes" className={titulo}>Órdenes de compra {anio}</h2>
+          <p className="mt-1 text-ink-2">
+            {filas.length === 0
+              ? 'Todavía no hay presupuestos aprobados. Cada uno que apruebes entra a las órdenes de sus periodos.'
+              : `${filas.length} de ${departamentos} departamentos aprobados · ${money(total)} en el año`}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Link href="/ordenes-de-compra" className={boton.primario}>Ver las órdenes<IconoFlecha className="size-4" /></Link>
+          {filas.length > 0 && (
+            <a href="/ordenes-de-compra/exportar" download className={boton.secundario}>
+              <IconoDescarga className="size-4" />Descargar resumen
+            </a>
+          )}
+        </div>
       </div>
-      <div className="flex flex-wrap gap-2">
-        <Link href="/proyeccion" className={boton.primario}>Ver la proyección<IconoFlecha className="size-4" /></Link>
-        {filas.length > 0 && (
-          <a href="/proyeccion/exportar" download className={boton.secundario}>
-            <IconoDescarga className="size-4" />Descargar para Excel
-          </a>
-        )}
-      </div>
+      {filas.length > 0 && (
+        <ul className="mt-5 grid gap-3 sm:grid-cols-3" aria-label="Total de cada orden de compra">
+          {PERIODOS.map((p, i) => (
+            <li key={p.numero}>
+              <Link href={`/ordenes-de-compra?periodo=${p.numero}`}
+                className="block h-full rounded-xl border border-line px-4 py-3 transition-colors hover:border-accent hover:bg-accent-soft/40">
+                <span className="block text-sm font-semibold text-ink">
+                  {p.nombre} <span className="font-normal text-ink-2">· {p.meses}</span>
+                </span>
+                <span className="mt-0.5 block text-xl font-semibold">{money(porPeriodo[i])}</span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }

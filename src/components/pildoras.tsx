@@ -10,15 +10,17 @@ export function EstadoPresupuestoPildora({ estado }: { estado: EstadoPresupuesto
     case 'borrador':
       return <span className={`${pildora} bg-surface-2 text-ink-2`}>{NOMBRE_ESTADO.borrador}</span>;
     case 'enviado':
+    case 'revision_contabilidad':
       return (
         <span className={`${pildora} bg-accent-soft text-accent-ink`}>
-          <IconoReloj className="size-4" />{NOMBRE_ESTADO.enviado}
+          <IconoReloj className="size-4" />{NOMBRE_ESTADO[estado]}
         </span>
       );
     case 'devuelto':
+    case 'con_reparos':
       return (
         <span className={`${pildora} bg-warn-soft text-warn`}>
-          <IconoAlerta className="size-4" />{NOMBRE_ESTADO.devuelto}
+          <IconoAlerta className="size-4" />{NOMBRE_ESTADO[estado]}
         </span>
       );
     case 'aprobado':

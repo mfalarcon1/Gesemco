@@ -1,14 +1,17 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
+import { PERIODOS } from '@/lib/periodos';
 
-type Opcion = { programaId: number; programa: string; items: number; total: number };
+type Opcion = { programaId: number; periodo: number; programa: string; items: number; total: number };
 
 const PESOS = new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 });
 
 /**
- * En el catálogo: a qué programa se agregan los artículos. Cambiarlo recarga
- * el catálogo con la misma búsqueda, para ver qué tiene ya ese programa.
+ * En el catálogo: a qué programa se agregan los artículos. Los programas van
+ * agrupados por periodo, porque el mismo programa puede estar en varios.
+ * Cambiarlo recarga el catálogo con la misma búsqueda, para ver qué tiene
+ * ya ese programa.
  */
 export function SelectorPrograma({
   programas, elegido, q, categoria,
@@ -33,10 +36,14 @@ export function SelectorPrograma({
         }}
         className="min-h-11 min-w-0 max-w-full flex-1 rounded-lg border border-line-strong bg-surface px-3 py-2 text-base font-semibold text-ink sm:flex-none"
       >
-        {programas.map((p) => (
-          <option key={p.programaId} value={p.programaId}>
-            {p.programa} ({p.items === 1 ? '1 ítem' : `${p.items} ítems`}, {PESOS.format(p.total)})
-          </option>
+        {PERIODOS.filter((per) => programas.some((p) => p.periodo === per.numero)).map((per) => (
+          <optgroup key={per.numero} label={`${per.nombre} · ${per.meses}`}>
+            {programas.filter((p) => p.periodo === per.numero).map((p) => (
+              <option key={p.programaId} value={p.programaId}>
+                {p.programa} ({p.items === 1 ? '1 ítem' : `${p.items} ítems`}, {PESOS.format(p.total)})
+              </option>
+            ))}
+          </optgroup>
         ))}
       </select>
       <noscript>

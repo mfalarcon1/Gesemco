@@ -75,7 +75,7 @@ export default async function Catalogo({ searchParams }: Props) {
                 </p>
               ) : !puedeAgregar ? (
                 <>
-                  <p className="min-w-0 flex-1 text-ink">Para agregar artículos, primero crea un programa en tu presupuesto.</p>
+                  <p className="min-w-0 flex-1 text-ink">Para agregar artículos, primero crea un programa en alguno de los periodos de tu presupuesto.</p>
                   <Link href={`/formulacion/${sesion.jefeDe.id}`} className={boton.primario}>Ir a mi presupuesto</Link>
                 </>
               ) : (

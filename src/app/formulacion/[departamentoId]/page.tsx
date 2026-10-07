@@ -3,27 +3,29 @@ import { notFound } from 'next/navigation';
 import { Encabezado, SinAcceso, SinDatos } from '@/components/encabezado';
 import { Aviso, leerAviso } from '@/components/aviso';
 import { EstadoPresupuestoPildora } from '@/components/pildoras';
-import { ColumnasMensuales } from '@/components/columnas-mensuales';
 import { Pasos } from '@/components/pasos';
-import { Medidor } from '@/components/medidor';
 import { BotonConConfirmacion } from '@/components/confirmar';
 import { ItemPresupuesto } from '@/components/item-presupuesto';
 import { ItemAMano } from '@/components/item-a-mano';
 import { NuevoPrograma } from '@/components/nuevo-programa';
 import { COLUMNAS_ITEM, type ModoItem } from '@/components/columnas-item';
 import {
-  IconoAlerta, IconoBuscar, IconoCalendario, IconoOk, IconoReloj, IconoVolver,
+  IconoAlerta, IconoBuscar, IconoFlecha, IconoOk, IconoReloj, IconoVolver,
 } from '@/components/iconos';
 import { ayuda, boton, campo, tarjeta, titulo, tituloPagina } from '@/components/ui';
-import { esDireccion, esJefeDe, getSesion, participaEnFormulacion } from '@/lib/sesion';
 import {
-  cuentasContables, esEditable, programasConLineas, proyeccionPresupuesto, resumenDepartamento,
-  type ProgramaConLineas, type Proyeccion, type ResumenPresupuesto,
+  esContabilidad, esDireccion, esJefeDe, getSesion, participaEnFormulacion, veOrdenesDeCompra,
+} from '@/lib/sesion';
+import {
+  cuentasContables, esEditable, programasConLineas, resumenDepartamento, sumarPorPeriodo,
+  type PorPeriodo, type ProgramaConLineas, type ResumenPresupuesto,
 } from '@/lib/formulacion';
-import { fecha, MESES, money, plural } from '@/lib/formato';
-import { pasosDe, type Avance } from '@/lib/etapas';
+import { PERIODOS, type Periodo } from '@/lib/periodos';
+import { fecha, money, plural } from '@/lib/formato';
+import { pasosDe } from '@/lib/etapas';
 import {
-  aprobarPresupuesto, devolverPresupuesto, eliminarPrograma, enviarADireccion, retirarEnvio,
+  aprobarContabilidad, aprobarDireccion, devolverPresupuesto, eliminarPrograma, enviarADireccion,
+  enviarReparos, reenviarAContabilidad, retirarEnvio,
 } from '../acciones';
 
 type Props = {
@@ -65,10 +67,6 @@ export default async function PresupuestoDepartamento({ params, searchParams }: 
     resumen.presupuestoId ? programasConLineas(resumen.presupuestoId) : Promise.resolve([]),
     cuentasContables(),
   ]);
-  const aprobado = resumen.estado === 'aprobado';
-  const proyeccion = resumen.presupuestoId && aprobado
-    ? await proyeccionPresupuesto(resumen.presupuestoId, resumen.formulado)
-    : null;
 
   const soyJefe = esJefeDe(sesion, departamentoId);
   const editable = soyJefe && esEditable(resumen.estado);
@@ -76,8 +74,8 @@ export default async function PresupuestoDepartamento({ params, searchParams }: 
   const anio = sesion.anioFormulacion.anio;
 
   const lineas = programas.flatMap((p) => p.lineas);
-  const avance: Avance = { listos: lineas.filter((l) => l.cantidadSinMes === 0).length, total: lineas.length };
-  const modo: ModoItem = editable ? 'editable' : aprobado ? 'meses' : 'lectura';
+  const porPeriodo = sumarPorPeriodo(programas);
+  const modo: ModoItem = editable ? 'editable' : 'lectura';
 
   return (
     <>
@@ -92,33 +90,33 @@ export default async function PresupuestoDepartamento({ params, searchParams }: 
 
         <div className="mb-6 flex flex-wrap items-end gap-x-6 gap-y-3">
           <div className="min-w-0 flex-1">
-            <p className="text-[15px] font-medium text-ink-2">Presupuesto {anio}</p>
+            <p className="text-[15px] font-medium text-ink-2">
+              Presupuesto {anio}
+              {resumen.estado !== 'aprobado' && resumen.formulacionHasta && ` · la formulación cierra el ${fecha(resumen.formulacionHasta)}`}
+            </p>
             <div className="flex flex-wrap items-center gap-3">
               <h1 className={tituloPagina}>{resumen.departamento}</h1>
               <EstadoPresupuestoPildora estado={resumen.estado} />
             </div>
           </div>
           <div className="text-right">
-            <p className="text-sm font-medium text-ink-2">{aprobado ? 'Monto aprobado' : 'Total'}</p>
+            <p className="text-sm font-medium text-ink-2">{resumen.estado === 'aprobado' ? 'Monto aprobado' : 'Total'}</p>
             <p className="text-[32px] font-semibold leading-tight tracking-tight">
               {money(resumen.montoAprobado ?? resumen.formulado)}
             </p>
           </div>
         </div>
 
-        <Pasos pasos={pasosDe(resumen, avance)} />
+        <Pasos pasos={pasosDe(resumen)} />
 
         <div className="mt-6">
-          {aprobado ? (
-            <SeccionMeses resumen={resumen} proyeccion={proyeccion} avance={avance} soyJefe={soyJefe} anio={anio} />
-          ) : (
-            <QueHacer resumen={resumen} soyJefe={soyJefe} soyDireccion={esDireccion(sesion)} lineas={lineas.length} />
-          )}
+          <QueHacer resumen={resumen} soyJefe={soyJefe} soyDireccion={esDireccion(sesion)}
+            soyContabilidad={esContabilidad(sesion)} verOrdenes={veOrdenesDeCompra(sesion)} lineas={lineas.length} />
         </div>
 
         <section id="programas" className="mt-10">
           <div className="mb-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-            <h2 className={titulo}>Programas</h2>
+            <h2 className={titulo}>Programas de cada periodo</h2>
             {programas.length > 0 && (
               <p className={ayuda}>
                 {plural(programas.length, 'programa', 'programas')} · {plural(lineas.length, 'ítem', 'ítems')}
@@ -134,15 +132,18 @@ export default async function PresupuestoDepartamento({ params, searchParams }: 
               <p className={`${tarjeta} px-6 py-10 text-center text-ink-2`}>El departamento todavía no crea programas.</p>
             )
           ) : (
-            <div className="flex flex-col gap-6">
-              {programas.map((p) => (
-                <TarjetaPrograma key={p.id} programa={p} departamentoId={departamentoId} modo={modo}
-                  editable={editable} mostrarCuenta={sesion.veTodoElColegio} cuentas={cuentas} />
-              ))}
-              {/* Las keys salen de los datos: cuando una acción sale bien los datos cambian y el
-                  formulario se cierra; si sale mal, sigue abierto con lo que se escribió. */}
-              {editable && <NuevoPrograma key={`nuevo-${programas.length}`} departamentoId={departamentoId} />}
-            </div>
+            <>
+              <ResumenPeriodos porPeriodo={porPeriodo} programas={programas} />
+              <div className="mt-10 flex flex-col gap-12">
+                {PERIODOS.map((p) => (
+                  <SeccionPeriodo key={p.numero} periodo={p} total={porPeriodo[p.numero - 1]}
+                    programas={programas.filter((x) => x.periodo === p.numero)}
+                    sugerencias={sugerenciasPara(p.numero, programas)}
+                    departamentoId={departamentoId} modo={modo} editable={editable}
+                    mostrarCuenta={sesion.veTodoElColegio} cuentas={cuentas} />
+                ))}
+              </div>
+            </>
           )}
         </section>
       </main>
@@ -150,67 +151,118 @@ export default async function PresupuestoDepartamento({ params, searchParams }: 
   );
 }
 
+/** Programas que el departamento ya tiene en otros periodos y todavía no en este. */
+function sugerenciasPara(periodo: number, programas: ProgramaConLineas[]): string[] {
+  const aca = new Set(programas.filter((p) => p.periodo === periodo).map((p) => p.nombre.toLowerCase()));
+  const vistas = new Set<string>();
+  const nombres: string[] = [];
+  for (const p of programas) {
+    const clave = p.nombre.toLowerCase();
+    if (p.periodo === periodo || aca.has(clave) || vistas.has(clave)) continue;
+    vistas.add(clave);
+    nombres.push(p.nombre);
+  }
+  return nombres;
+}
+
 // ---------------------------------------------------------------------
 // En qué va el presupuesto y qué hay que hacer ahora
 // ---------------------------------------------------------------------
 
 function QueHacer({
-  resumen: r, soyJefe, soyDireccion, lineas,
-}: { resumen: ResumenPresupuesto; soyJefe: boolean; soyDireccion: boolean; lineas: number }) {
+  resumen: r, soyJefe, soyDireccion, soyContabilidad, verOrdenes, lineas,
+}: {
+  resumen: ResumenPresupuesto; soyJefe: boolean; soyDireccion: boolean; soyContabilidad: boolean;
+  verOrdenes: boolean; lineas: number;
+}) {
   const oculto = <input type="hidden" name="departamentoId" value={r.departamentoId} />;
 
   if (r.estado === 'enviado' && soyDireccion) return <DecisionDireccion resumen={r} />;
+  if (r.estado === 'revision_contabilidad' && soyContabilidad) return <DecisionContabilidad resumen={r} />;
 
   if (r.estado === 'devuelto') {
     return (
-      <div className="rounded-2xl border border-warn/40 bg-warn-soft px-6 py-5">
-        <div className="flex flex-wrap items-start gap-4">
-          <IconoAlerta className="mt-0.5 size-6 shrink-0 text-warn" />
-          <div className="min-w-[15rem] flex-1">
-            <p className="text-lg font-semibold text-ink">
-              {soyJefe ? 'Dirección te devolvió el presupuesto' : 'Dirección devolvió el presupuesto'} el {fecha(r.resueltoEn)}
-            </p>
-            {r.comentarioDireccion && (
-              <blockquote className="mt-2 border-l-4 border-warn/50 pl-4 text-[17px] text-ink">
-                “{r.comentarioDireccion}”
-              </blockquote>
-            )}
-            <p className="mt-3 text-ink-2">
-              {soyJefe ? 'Ajusta lo que te pidió en los programas de abajo y vuelve a enviarlo.' : 'El jefe lo está ajustando.'}
-            </p>
-          </div>
-          {soyJefe && (
-            <form action={enviarADireccion}>
-              {oculto}
-              <button className={boton.primario}>Enviar de nuevo</button>
-            </form>
-          )}
-        </div>
-      </div>
+      <Comentario
+        titulo={`${soyJefe ? 'Dirección te devolvió el presupuesto' : 'Dirección devolvió el presupuesto'} el ${fecha(r.resueltoDireccionEn)}`}
+        comentario={r.comentarioDireccion}
+        explicacion={soyJefe ? 'Ajusta lo que te pidió en los programas de abajo y vuelve a enviarlo a Dirección.' : 'El jefe lo está ajustando.'}
+        accion={soyJefe && (
+          <form action={enviarADireccion}>
+            {oculto}
+            <button className={boton.primario}>Enviar de nuevo a Dirección</button>
+          </form>
+        )}
+      />
+    );
+  }
+
+  if (r.estado === 'con_reparos') {
+    return (
+      <Comentario
+        titulo={`${soyJefe ? 'Contabilidad te envió reparos' : 'Contabilidad envió reparos'} el ${fecha(r.resueltoContabilidadEn)}`}
+        comentario={r.comentarioContabilidad}
+        explicacion={soyJefe
+          ? 'Corrige lo que te pidió en los programas de abajo. Cuando lo reenvíes, vuelve directo a contabilidad, sin pasar otra vez por Dirección.'
+          : 'El jefe lo está corrigiendo. Cuando lo reenvíe, vuelve directo a contabilidad.'}
+        accion={soyJefe && (
+          <form action={reenviarAContabilidad}>
+            {oculto}
+            <button className={boton.primario} disabled={lineas === 0}>Enviar de nuevo a contabilidad</button>
+          </form>
+        )}
+      />
     );
   }
 
   if (r.estado === 'enviado') {
     return (
-      <div className="flex flex-wrap items-start gap-4 rounded-2xl border border-accent/30 bg-accent-soft px-6 py-5">
-        <IconoReloj className="mt-0.5 size-6 shrink-0 text-accent-ink" />
-        <div className="min-w-[15rem] flex-1 text-accent-ink">
-          <p className="text-lg font-semibold">
-            {soyJefe ? 'Dirección está revisando tu presupuesto' : 'En revisión de Dirección'} desde el {fecha(r.enviadoEn)}
-          </p>
-          <p className="mt-1">
-            {soyJefe
-              ? 'Te llegará un aviso cuando lo apruebe o te lo devuelva. Mientras tanto no se puede editar; si necesitas corregir algo, retira el envío.'
-              : 'Mientras Dirección lo revisa, el jefe no puede editarlo.'}
-          </p>
-        </div>
-        {soyJefe && (
+      <Informacion icono={<IconoReloj className="mt-0.5 size-6 shrink-0 text-accent-ink" />}
+        titulo={`${soyJefe ? 'Dirección está revisando tu presupuesto' : 'En revisión de Dirección'} desde el ${fecha(r.enviadoEn)}`}
+        texto={soyJefe
+          ? 'Te llegará un aviso cuando lo apruebe o te lo devuelva. Mientras tanto no se puede editar; si necesitas corregir algo, retira el envío.'
+          : 'Dirección lo revisa con el jefe. Si lo aprueba, pasa a contabilidad.'}
+        accion={soyJefe && (
           <form action={retirarEnvio}>
             {oculto}
             <button className={boton.secundario}>Retirar envío</button>
           </form>
         )}
-      </div>
+      />
+    );
+  }
+
+  if (r.estado === 'revision_contabilidad') {
+    return (
+      <Informacion icono={<IconoReloj className="mt-0.5 size-6 shrink-0 text-accent-ink" />}
+        titulo={`${soyJefe ? 'Contabilidad está revisando tu presupuesto' : 'En revisión de contabilidad'} desde el ${fecha(r.enContabilidadDesde)}`}
+        texto={soyJefe
+          ? `${r.comentarioContabilidad ? 'Lo reenviaste con los reparos corregidos.' : 'Dirección ya lo aprobó.'} Te llegará un aviso cuando contabilidad lo apruebe o te envíe reparos. Mientras tanto no se puede editar.`
+          : r.comentarioContabilidad
+            ? `El jefe lo reenvió el ${fecha(r.enviadoEn)} con los reparos corregidos. Ahora contabilidad lo aprueba o envía nuevos reparos.`
+            : `Dirección lo aprobó el ${fecha(r.resueltoDireccionEn)}. Ahora contabilidad lo aprueba o envía reparos.`}
+      />
+    );
+  }
+
+  if (r.estado === 'aprobado') {
+    return (
+      <section aria-labelledby="aprobado" className="flex flex-wrap items-start gap-4 rounded-2xl border border-ok/40 bg-ok-soft px-6 py-5">
+        <IconoOk className="mt-0.5 size-6 shrink-0 text-ok" />
+        <div className="min-w-[15rem] flex-1">
+          <p id="aprobado" className="text-lg font-semibold text-ink">
+            Aprobado por contabilidad el {fecha(r.resueltoContabilidadEn)} por {money(r.montoAprobado)}
+          </p>
+          <p className="mt-1 text-ink-2">
+            {r.modificaciones !== 0 && `Vigente: ${money(r.vigente)}, con modificaciones. `}
+            Quedó fijo, y sus ítems entran a las órdenes de compra de cada periodo.
+          </p>
+        </div>
+        {verOrdenes && (
+          <Link href="/ordenes-de-compra" className={boton.secundario}>
+            Ver las órdenes de compra<IconoFlecha className="size-4" />
+          </Link>
+        )}
+      </section>
     );
   }
 
@@ -233,7 +285,7 @@ function QueHacer({
         <p className="mt-1 text-ink-2">
           {lineas === 0
             ? 'Cuando tengas al menos un ítem, podrás enviarlo a Dirección.'
-            : 'Dirección lo revisa contigo en una reunión. Mientras lo revisa no podrás editarlo, pero puedes retirar el envío si necesitas corregir algo.'}
+            : 'Dirección lo revisa contigo en una reunión y después lo revisa contabilidad. Mientras Dirección lo revisa no podrás editarlo, pero puedes retirar el envío si necesitas corregir algo.'}
         </p>
       </div>
       <form action={enviarADireccion}>
@@ -244,24 +296,68 @@ function QueHacer({
   );
 }
 
+/** Lo que dijo quien revisó (Dirección al devolver, contabilidad con sus reparos). */
+function Comentario({
+  titulo: t, comentario, explicacion, accion,
+}: { titulo: string; comentario: string | null; explicacion: string; accion?: React.ReactNode }) {
+  return (
+    <div className="rounded-2xl border border-warn/40 bg-warn-soft px-6 py-5">
+      <div className="flex flex-wrap items-start gap-4">
+        <IconoAlerta className="mt-0.5 size-6 shrink-0 text-warn" />
+        <div className="min-w-[15rem] flex-1">
+          <p className="text-lg font-semibold text-ink">{t}</p>
+          {comentario && (
+            <blockquote className="mt-2 border-l-4 border-warn/50 pl-4 text-[17px] text-ink">“{comentario}”</blockquote>
+          )}
+          <p className="mt-3 text-ink-2">{explicacion}</p>
+        </div>
+        {accion}
+      </div>
+    </div>
+  );
+}
+
+function Informacion({
+  icono, titulo: t, texto, accion,
+}: { icono: React.ReactNode; titulo: string; texto: string; accion?: React.ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-start gap-4 rounded-2xl border border-accent/30 bg-accent-soft px-6 py-5">
+      {icono}
+      <div className="min-w-[15rem] flex-1 text-accent-ink">
+        <p className="text-lg font-semibold">{t}</p>
+        <p className="mt-1">{texto}</p>
+      </div>
+      {accion}
+    </div>
+  );
+}
+
 function DecisionDireccion({ resumen: r }: { resumen: ResumenPresupuesto }) {
   const oculto = <input type="hidden" name="departamentoId" value={r.departamentoId} />;
   return (
     <section aria-labelledby="decision" className="rounded-2xl border-2 border-accent/40 bg-surface p-6">
       <h2 id="decision" className={titulo}>Tu decisión</h2>
       <p className={`${ayuda} mt-1`}>
-        Enviado el {fecha(r.enviadoEn)}. Revisa los programas más abajo; lo que conversen en la reunión con el jefe se resuelve aquí.
+        {r.comentarioDireccion ? `El jefe lo reenvió el ${fecha(r.enviadoEn)} con los ajustes.` : `Enviado el ${fecha(r.enviadoEn)}.`}
+        {' '}Revisa los programas de cada periodo más abajo; lo que conversen en la reunión con el jefe se resuelve aquí.
       </p>
+      {r.comentarioDireccion && (
+        <div className="mt-3 rounded-xl bg-surface-2 px-4 py-3">
+          <p className="text-sm font-semibold text-ink-2">Lo que se pidió al devolverlo</p>
+          <blockquote className="mt-1 text-ink">“{r.comentarioDireccion}”</blockquote>
+        </div>
+      )}
       <div className="mt-5 grid gap-4 md:grid-cols-2">
-        <form action={aprobarPresupuesto} className="flex flex-col gap-3 rounded-xl border border-line p-5">
+        <form action={aprobarDireccion} className="flex flex-col gap-3 rounded-xl border border-line p-5">
           {oculto}
           <h3 className="flex items-center gap-2 text-lg font-semibold"><IconoOk className="size-5 text-ok" />Aprobar</h3>
           <p className="text-ink-2">
-            El presupuesto queda fijo en {money(r.formulado)} y el jefe pasa a indicar los meses. Después ya no se puede cambiar.
+            El presupuesto ({money(r.formulado)}) pasa a contabilidad, que da la aprobación final. Si contabilidad pide
+            cambios, el jefe los corrige y se lo reenvía directo a ella.
           </p>
           <div className="mt-auto pt-2">
             <BotonConConfirmacion
-              texto={`Aprobar por ${money(r.formulado)}`}
+              texto="Aprobar y pasar a contabilidad"
               pregunta="¿Confirmas la aprobación?"
               confirmar="Sí, aprobar"
               clase={boton.primario}
@@ -287,96 +383,69 @@ function DecisionDireccion({ resumen: r }: { resumen: ResumenPresupuesto }) {
   );
 }
 
-// ---------------------------------------------------------------------
-// Presupuesto aprobado: los meses y la proyección
-// ---------------------------------------------------------------------
-
-function SeccionMeses({
-  resumen: r, proyeccion, avance, soyJefe, anio,
-}: { resumen: ResumenPresupuesto; proyeccion: Proyeccion | null; avance: Avance; soyJefe: boolean; anio: number }) {
-  const listo = avance.total > 0 && avance.listos === avance.total;
-  const hayMeses = proyeccion !== null && proyeccion.meses.some((m) => m > 0);
-  const enlace = `/formulacion/${r.departamentoId}/meses`;
-
+function DecisionContabilidad({ resumen: r }: { resumen: ResumenPresupuesto }) {
+  const oculto = <input type="hidden" name="departamentoId" value={r.departamentoId} />;
   return (
-    <section aria-labelledby="meses" className={`${tarjeta} p-6`}>
-      <p className="mb-4 flex flex-wrap items-center gap-2 text-ok">
-        <IconoOk className="size-5" />
-        <span className="font-semibold">Aprobado por Dirección el {fecha(r.resueltoEn)} por {money(r.montoAprobado)}</span>
-        {r.modificaciones !== 0 && <span className="text-ink-2">· vigente {money(r.vigente)}, con modificaciones</span>}
+    <section aria-labelledby="decision" className="rounded-2xl border-2 border-accent/40 bg-surface p-6">
+      <h2 id="decision" className={titulo}>Tu revisión</h2>
+      <p className={`${ayuda} mt-1`}>
+        {r.comentarioContabilidad
+          ? `El jefe lo reenvió el ${fecha(r.enviadoEn)} con los reparos corregidos (Dirección lo había aprobado el ${fecha(r.resueltoDireccionEn)}).`
+          : `Dirección lo aprobó el ${fecha(r.resueltoDireccionEn)}.`}
+        {' '}Revisa los programas de cada periodo más abajo.
       </p>
-
-      <div className="flex flex-wrap items-start gap-x-6 gap-y-4">
-        <div className="min-w-[15rem] flex-1">
-          <h2 id="meses" className={titulo}>
-            {soyJefe ? (listo ? 'Listo: todo tiene sus meses' : 'Ahora, indica los meses de cada compra') : 'Meses de cada compra'}
-          </h2>
-          <p className="mt-1 max-w-3xl text-ink-2">
-            {soyJefe
-              ? 'Escribe cuántas unidades de cada ítem necesitas en cada mes, en la cantidad que quieras. Así GESEMCO sabe cuánto dinero se necesita mes a mes.'
-              : 'El jefe indica cuántas unidades de cada ítem necesita cada mes; con eso GESEMCO arma la proyección mensual.'}
-          </p>
+      {/* El comentario de contabilidad se conserva al reenviar: sirve para revisar que se corrigió. */}
+      {r.comentarioContabilidad && (
+        <div className="mt-3 rounded-xl bg-surface-2 px-4 py-3">
+          <p className="text-sm font-semibold text-ink-2">Los reparos que se enviaron</p>
+          <blockquote className="mt-1 text-ink">“{r.comentarioContabilidad}”</blockquote>
         </div>
-        <Link href={enlace} className={soyJefe && !listo ? boton.primario : boton.secundario}>
-          <IconoCalendario className="size-5" />
-          {soyJefe ? (listo ? 'Revisar los meses' : 'Indicar los meses') : 'Ver los meses'}
-        </Link>
-      </div>
-
-      <div className="mt-5 max-w-xl">
-        <p className="mb-2 text-[15px] font-medium">
-          {avance.listos} de {avance.total} {avance.total === 1 ? 'ítem' : 'ítems'} con todos sus meses
-        </p>
-        <Medidor valor={avance.listos} total={avance.total} etiqueta="Ítems con todos sus meses" />
-      </div>
-
-      <div className="mt-8 border-t border-line pt-6">
-        <div className="mb-4 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <h3 className="text-lg font-semibold">Dinero que se necesita cada mes, {anio}</h3>
-          {proyeccion && proyeccion.sinMes > 0 && hayMeses && (
-            <p className={ayuda}>Todavía hay {money(proyeccion.sinMes)} sin mes asignado.</p>
-          )}
-        </div>
-        {hayMeses && proyeccion ? (
-          <>
-            <ColumnasMensuales meses={proyeccion.meses} descripcion={`Dinero que necesita ${r.departamento} cada mes de ${anio}`} />
-            <details className="mt-4">
-              <summary className="cursor-pointer text-[15px] font-medium text-accent">Ver los montos en una tabla</summary>
-              <table className="mt-3 w-full max-w-md border-collapse">
-                <tbody>
-                  {proyeccion.meses.map((m, i) => (
-                    <tr key={MESES[i]}>
-                      <td className="border-b border-line py-2 capitalize">{MESES[i]}</td>
-                      <td className="tabular border-b border-line py-2 text-right">{money(m)}</td>
-                    </tr>
-                  ))}
-                  <tr>
-                    <td className="py-2 text-ink-2">Sin mes asignado</td>
-                    <td className="tabular py-2 text-right text-ink-2">{money(proyeccion.sinMes)}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </details>
-          </>
-        ) : (
-          <p className="rounded-xl bg-surface-2 px-5 py-6 text-center text-ink-2">
-            Cuando se indiquen los meses, aquí aparecerá cuánto dinero se necesita cada mes.
+      )}
+      <div className="mt-5 grid gap-4 md:grid-cols-2">
+        <form action={aprobarContabilidad} className="flex flex-col gap-3 rounded-xl border border-line p-5">
+          {oculto}
+          <h3 className="flex items-center gap-2 text-lg font-semibold"><IconoOk className="size-5 text-ok" />Aprobar</h3>
+          <p className="text-ink-2">
+            El presupuesto queda fijo en {money(r.formulado)} y sus ítems entran a las órdenes de compra de cada periodo.
+            Después ya no se puede cambiar.
           </p>
-        )}
+          <div className="mt-auto pt-2">
+            <BotonConConfirmacion
+              texto={`Aprobar por ${money(r.formulado)}`}
+              pregunta="¿Confirmas la aprobación final?"
+              confirmar="Sí, aprobar"
+              clase={boton.primario}
+              claseConfirmar={boton.primario}
+              enfocar="confirmar"
+            />
+          </div>
+        </form>
+        <form action={enviarReparos} className="flex flex-col gap-3 rounded-xl border border-line p-5">
+          {oculto}
+          <h3 className="flex items-center gap-2 text-lg font-semibold"><IconoAlerta className="size-5 text-warn" />Enviar reparos</h3>
+          <label htmlFor="reparos" className="text-ink-2">
+            Escribe qué tiene que corregir. El jefe lo corrige y te lo reenvía directo, sin pasar otra vez por Dirección.
+          </label>
+          <textarea id="reparos" name="comentario" required rows={3} maxLength={1000} className={campo}
+            placeholder="Por ejemplo: ajusta el arriendo de buses a la cotización vigente." />
+          <div className="mt-auto pt-2">
+            <button className={boton.secundario}>Enviar reparos</button>
+          </div>
+        </form>
       </div>
     </section>
   );
 }
 
 // ---------------------------------------------------------------------
-// Programas e ítems
+// Periodos, programas e ítems
 // ---------------------------------------------------------------------
 
 function Bienvenida({ departamentoId, anio }: { departamentoId: number; anio: number }) {
   const pasos = [
-    { titulo: 'Crea un programa', texto: 'Cada cosa que el departamento hará el próximo año: una salida, una olimpiada, el material de un curso.' },
-    { titulo: 'Agrégale lo que necesita', texto: 'Búscalo en el catálogo, con precios de tiendas, o agrégalo a mano.' },
-    { titulo: 'Envíalo a Dirección', texto: 'Lo revisan contigo en una reunión y lo aprueban. Después indicas los meses.' },
+    { titulo: 'Elige un periodo y crea un programa', texto: 'El año tiene tres periodos: marzo a mayo, junio a agosto y septiembre a diciembre.' },
+    { titulo: 'Agrégale lo que necesitará', texto: 'Búscalo en el catálogo, con precios de tiendas, o agrégalo a mano. Si el programa sigue en otro periodo, créalo también allá.' },
+    { titulo: 'Envíalo a Dirección', texto: 'Lo revisan contigo en una reunión y después lo aprueba contabilidad.' },
   ];
   return (
     <section className={`${tarjeta} p-6 md:p-8`}>
@@ -399,6 +468,71 @@ function Bienvenida({ departamentoId, anio }: { departamentoId: number; anio: nu
   );
 }
 
+/** Cuánto va en cada periodo, con un enlace a su sección. */
+function ResumenPeriodos({ porPeriodo, programas }: { porPeriodo: PorPeriodo; programas: ProgramaConLineas[] }) {
+  return (
+    <ul className="grid gap-3 md:grid-cols-3" aria-label="Total de cada periodo">
+      {PERIODOS.map((p) => {
+        const propios = programas.filter((x) => x.periodo === p.numero);
+        const items = propios.reduce((s, x) => s + x.lineas.length, 0);
+        return (
+          <li key={p.numero}>
+            <a href={`#periodo-${p.numero}`}
+              className={`${tarjeta} flex h-full flex-col gap-1 px-5 py-4 transition-colors hover:border-accent hover:bg-accent-soft/40`}>
+              <span className="text-[15px] font-semibold text-ink">{p.nombre} <span className="font-normal text-ink-2">· {p.meses}</span></span>
+              <span className="tabular text-2xl font-semibold tracking-tight">{money(porPeriodo[p.numero - 1])}</span>
+              <span className="text-sm text-ink-2">
+                {propios.length === 0 ? 'Sin programas' : `${plural(propios.length, 'programa', 'programas')} · ${plural(items, 'ítem', 'ítems')}`}
+              </span>
+            </a>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function SeccionPeriodo({
+  periodo: p, total, programas, sugerencias, departamentoId, modo, editable, mostrarCuenta, cuentas,
+}: {
+  periodo: Periodo; total: number; programas: ProgramaConLineas[]; sugerencias: string[];
+  departamentoId: number; modo: ModoItem; editable: boolean; mostrarCuenta: boolean; cuentas: Cuenta[];
+}) {
+  const id = `periodo-${p.numero}`;
+  return (
+    <section id={id} aria-labelledby={`${id}-titulo`} className="scroll-mt-28">
+      <div className="mb-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b-2 border-accent/30 pb-2">
+        <h3 id={`${id}-titulo`} className="font-display text-[22px] font-bold">
+          {p.nombre} <span className="font-sans text-lg font-medium text-ink-2">· {p.meses}</span>
+        </h3>
+        <p className="tabular text-lg font-semibold">{money(total)}</p>
+      </div>
+
+      {programas.length === 0 ? (
+        <p className="rounded-2xl border border-dashed border-line-strong px-6 py-5 text-ink-2">
+          {editable ? 'Todavía no hay programas en este periodo.' : 'Sin programas en este periodo.'}
+        </p>
+      ) : (
+        <div className="flex flex-col gap-6">
+          {programas.map((x) => (
+            <TarjetaPrograma key={x.id} programa={x} departamentoId={departamentoId} modo={modo}
+              editable={editable} mostrarCuenta={mostrarCuenta} cuentas={cuentas} />
+          ))}
+        </div>
+      )}
+
+      {/* Las keys salen de los datos: cuando una acción sale bien los datos cambian y el
+          formulario se cierra; si sale mal, sigue abierto con lo que se escribió. */}
+      {editable && (
+        <div className="mt-4">
+          <NuevoPrograma key={`nuevo-${p.numero}-${programas.length}`} departamentoId={departamentoId}
+            periodo={p.numero} sugerencias={sugerencias} />
+        </div>
+      )}
+    </section>
+  );
+}
+
 function TarjetaPrograma({
   programa: p, departamentoId, modo, editable, mostrarCuenta, cuentas,
 }: {
@@ -406,10 +540,10 @@ function TarjetaPrograma({
   mostrarCuenta: boolean; cuentas: Cuenta[];
 }) {
   return (
-    <article id={`programa-${p.id}`} className={`${tarjeta} overflow-hidden`}>
+    <article id={`programa-${p.id}`} className={`${tarjeta} scroll-mt-28 overflow-hidden`}>
       <header className="flex flex-wrap items-start gap-4 px-6 py-5">
         <div className="min-w-0 flex-1">
-          <h3 className="font-display text-xl font-semibold">{p.nombre}</h3>
+          <h4 className="font-display text-xl font-semibold">{p.nombre}</h4>
           {p.descripcion && <p className="mt-1 text-ink-2">{p.descripcion}</p>}
         </div>
         <div className="text-right">
@@ -420,7 +554,7 @@ function TarjetaPrograma({
 
       {p.lineas.length === 0 ? (
         <p className="border-t border-line px-6 py-6 text-ink-2">
-          {editable ? 'Este programa todavía está vacío. Agrégale lo que necesita con los botones de abajo.' : 'Este programa no tiene ítems.'}
+          {editable ? 'Este programa todavía está vacío. Agrégale lo que necesitará en este periodo con los botones de abajo.' : 'Este programa no tiene ítems.'}
         </p>
       ) : (
         <>
@@ -429,7 +563,6 @@ function TarjetaPrograma({
             <span className="text-right">Cantidad</span>
             <span className="text-right">Precio c/u</span>
             <span className="text-right">Total</span>
-            {modo === 'meses' && <span>Meses</span>}
             {modo === 'editable' && <span />}
           </div>
           <ul className="divide-y divide-line border-t border-line md:border-t-0">
@@ -453,8 +586,8 @@ function TarjetaPrograma({
             <BotonConConfirmacion
               texto="Eliminar programa"
               pregunta={p.lineas.length > 0
-                ? `¿Eliminar "${p.nombre}" y ${p.lineas.length === 1 ? 'su ítem' : `sus ${p.lineas.length} ítems`}?`
-                : `¿Eliminar "${p.nombre}"?`}
+                ? `¿Eliminar "${p.nombre}" de este periodo y ${p.lineas.length === 1 ? 'su ítem' : `sus ${p.lineas.length} ítems`}?`
+                : `¿Eliminar "${p.nombre}" de este periodo?`}
               confirmar="Sí, eliminar"
               clase={`${boton.chico} text-ink-2 hover:bg-bad-soft hover:text-bad`}
               claseConfirmar={boton.peligro}

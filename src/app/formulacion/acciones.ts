@@ -1,15 +1,14 @@
 'use server';
 
-import { and, eq, inArray } from 'drizzle-orm';
-import {
-  programa, lineaPresupuesto, lineaCalendario, presupuestoDepartamento,
-} from '@/db';
+import { and, eq } from 'drizzle-orm';
+import { programa, lineaPresupuesto, presupuestoDepartamento } from '@/db';
 import {
   comoUsuario, enteroDe, exigir, exigirSesion, idDe, responder, texto, ErrorDeUsuario, type Tx,
 } from '@/lib/acciones';
 import { precioParaLinea } from '@/lib/catalogo';
 import { money } from '@/lib/formato';
-import { esDireccion, esJefeDe, type Sesion } from '@/lib/sesion';
+import { esPeriodo, nombreCompleto } from '@/lib/periodos';
+import { esContabilidad, esDireccion, esJefeDe, type Sesion } from '@/lib/sesion';
 
 /**
  * Acciones de la etapa 1. Cada una exige el rol que corresponde; las reglas
@@ -45,7 +44,7 @@ async function presupuestoDe(tx: Tx, departamentoId: number, anioId: number) {
 
 /** Confirma que el programa es del presupuesto de ese departamento en el año en formulación. */
 async function exigirPrograma(tx: Tx, programaId: number, departamentoId: number, anioId: number) {
-  const [p] = await tx.select({ nombre: programa.nombre })
+  const [p] = await tx.select({ nombre: programa.nombre, periodo: programa.periodo })
     .from(programa)
     .innerJoin(presupuestoDepartamento, eq(presupuestoDepartamento.id, programa.presupuestoId))
     .where(and(
@@ -85,6 +84,8 @@ export async function crearPrograma(form: FormData) {
   await responder(ruta(departamentoId), async () => {
     const sesion = await exigirSesion();
     exigir(esJefeDe(sesion, departamentoId), 'Solo el jefe del departamento crea programas.');
+    const periodo = Number(form.get('periodo'));
+    exigir(esPeriodo(periodo), 'Elige en qué periodo va el programa.');
     const nombre = texto(form, 'nombre', { obligatorio: true, max: 120 });
     const descripcion = texto(form, 'descripcion', { max: 600 }) || null;
     const anio = anioFormulacion(sesion);
@@ -92,12 +93,12 @@ export async function crearPrograma(form: FormData) {
     const id = await comoUsuario(sesion, async (tx) => {
       const presupuestoId = await asegurarPresupuesto(tx, departamentoId, anio.id);
       const [p] = await tx.insert(programa)
-        .values({ presupuestoId, nombre, descripcion, creadoPor: sesion.usuario.id })
+        .values({ presupuestoId, periodo, nombre, descripcion, creadoPor: sesion.usuario.id })
         .returning({ id: programa.id });
       return p.id;
     });
     return {
-      mensaje: `Programa "${nombre}" creado. Ahora agrégale lo que necesitas: búscalo en el catálogo o agrégalo a mano.`,
+      mensaje: `Programa "${nombre}" creado en el ${nombreCompleto(periodo)}. Ahora agrégale lo que necesitarás en ese periodo: búscalo en el catálogo o agrégalo a mano.`,
       ancla: `programa-${id}`,
     };
   });
@@ -114,9 +115,9 @@ export async function eliminarPrograma(form: FormData) {
     const nombre = await comoUsuario(sesion, async (tx) => {
       const p = await exigirPrograma(tx, programaId, departamentoId, anio.id);
       await tx.delete(programa).where(eq(programa.id, programaId));
-      return p.nombre;
+      return `"${p.nombre}" del periodo ${p.periodo}`;
     });
-    return { mensaje: `Programa "${nombre}" eliminado.`, ancla: 'programas' };
+    return { mensaje: `Programa ${nombre} eliminado.`, ancla: 'programas' };
   });
 }
 
@@ -149,9 +150,9 @@ export async function agregarDesdeCatalogo(form: FormData) {
         cuentaContableId: articulo.cuentaContableId,
         origenPrecio: articulo.origen,
       });
-      return p.nombre;
+      return `"${p.nombre}" del periodo ${p.periodo}`;
     });
-    return `Agregaste ${cantidad} × ${articulo.nombre} (${money(articulo.precio)} c/u) a "${nombrePrograma}".`;
+    return `Agregaste ${cantidad} × ${articulo.nombre} (${money(articulo.precio)} c/u) a ${nombrePrograma}.`;
   });
 }
 
@@ -225,19 +226,39 @@ export async function eliminarLinea(form: FormData) {
 }
 
 // ---------------------------------------------------------------------
-// Ciclo de vida: jefe envía o retira; Dirección aprueba o devuelve
+// Ciclo de vida. El jefe envía a Dirección o retira el envío; Dirección
+// aprueba (pasa a contabilidad) o devuelve; contabilidad aprueba o envía
+// reparos, y el jefe los corrige y reenvía directo a contabilidad.
 // ---------------------------------------------------------------------
 
+type Cambio =
+  | { estado: 'enviado' | 'borrador' | 'revision_contabilidad' | 'aprobado' }
+  | { estado: 'devuelto'; comentarioDireccion: string }
+  | { estado: 'con_reparos'; comentarioContabilidad: string };
+
+/**
+ * Las transiciones válidas las controla la base. Dos llegan al mismo estado
+ * desde lugares distintos y cada una es de un rol: a revisión de contabilidad
+ * llega lo que aprueba Dirección (desde enviado) y lo que reenvía el jefe
+ * después de los reparos (desde con reparos). Para esas, `desde` exige el
+ * estado de partida, así nadie usa la acción del otro rol.
+ */
 async function cambiarEstado(
-  sesion: Sesion, departamentoId: number,
-  estado: 'enviado' | 'borrador' | 'aprobado' | 'devuelto', comentario?: string,
+  sesion: Sesion, departamentoId: number, cambio: Cambio,
+  desde?: { estado: 'enviado' | 'con_reparos'; error: string },
 ) {
   const anio = anioFormulacion(sesion);
-  await comoUsuario(sesion, async (tx) => {
+  return comoUsuario(sesion, async (tx) => {
     const id = await presupuestoDe(tx, departamentoId, anio.id);
-    await tx.update(presupuestoDepartamento)
-      .set({ estado, ...(comentario !== undefined ? { comentarioDireccion: comentario } : {}) })
-      .where(eq(presupuestoDepartamento.id, id));
+    const [p] = await tx.update(presupuestoDepartamento)
+      .set(cambio)
+      .where(and(
+        eq(presupuestoDepartamento.id, id),
+        desde ? eq(presupuestoDepartamento.estado, desde.estado) : undefined,
+      ))
+      .returning({ montoAprobado: presupuestoDepartamento.montoAprobado });
+    if (!p && desde) throw new ErrorDeUsuario(desde.error);
+    return p;
   });
 }
 
@@ -246,7 +267,7 @@ export async function enviarADireccion(form: FormData) {
   await responder(ruta(departamentoId), async () => {
     const sesion = await exigirSesion();
     exigir(esJefeDe(sesion, departamentoId), 'Solo el jefe del departamento envía su presupuesto.');
-    await cambiarEstado(sesion, departamentoId, 'enviado');
+    await cambiarEstado(sesion, departamentoId, { estado: 'enviado' });
     return 'Enviaste tu presupuesto a Dirección. Te llegará un aviso cuando lo revise.';
   });
 }
@@ -256,18 +277,34 @@ export async function retirarEnvio(form: FormData) {
   await responder(ruta(departamentoId), async () => {
     const sesion = await exigirSesion();
     exigir(esJefeDe(sesion, departamentoId), 'Solo el jefe del departamento retira su envío.');
-    await cambiarEstado(sesion, departamentoId, 'borrador');
+    await cambiarEstado(sesion, departamentoId, { estado: 'borrador' });
     return 'Retiraste el envío: tu presupuesto volvió a preparación y ya lo puedes editar.';
   });
 }
 
-export async function aprobarPresupuesto(form: FormData) {
+export async function reenviarAContabilidad(form: FormData) {
   const departamentoId = idDe(form, 'departamentoId');
   await responder(ruta(departamentoId), async () => {
     const sesion = await exigirSesion();
-    exigir(esDireccion(sesion), 'Solo Dirección aprueba presupuestos.');
-    await cambiarEstado(sesion, departamentoId, 'aprobado');
-    return 'Presupuesto aprobado. El jefe ya puede indicar los meses de cada compra.';
+    exigir(esJefeDe(sesion, departamentoId), 'Solo el jefe del departamento reenvía su presupuesto.');
+    await cambiarEstado(sesion, departamentoId, { estado: 'revision_contabilidad' }, {
+      estado: 'con_reparos',
+      error: 'Tu presupuesto no tiene reparos de contabilidad: se reenvía directo a ella solo para corregirlos.',
+    });
+    return 'Reenviaste tu presupuesto directo a contabilidad. Te llegará un aviso cuando lo revise.';
+  });
+}
+
+export async function aprobarDireccion(form: FormData) {
+  const departamentoId = idDe(form, 'departamentoId');
+  await responder(ruta(departamentoId), async () => {
+    const sesion = await exigirSesion();
+    exigir(esDireccion(sesion), 'Solo Dirección aprueba en esta etapa.');
+    await cambiarEstado(sesion, departamentoId, { estado: 'revision_contabilidad' }, {
+      estado: 'enviado',
+      error: 'Ese presupuesto no está esperando la revisión de Dirección.',
+    });
+    return 'Presupuesto aprobado por Dirección. Ahora lo revisa contabilidad.';
   });
 }
 
@@ -278,75 +315,29 @@ export async function devolverPresupuesto(form: FormData) {
     exigir(esDireccion(sesion), 'Solo Dirección devuelve presupuestos.');
     const comentario = texto(form, 'comentario', { max: 1000 });
     exigir(comentario, 'Para devolver el presupuesto hay que escribirle un comentario al jefe.');
-    await cambiarEstado(sesion, departamentoId, 'devuelto', comentario);
+    await cambiarEstado(sesion, departamentoId, { estado: 'devuelto', comentarioDireccion: comentario });
     return 'Presupuesto devuelto al jefe con tu comentario.';
   });
 }
 
-// ---------------------------------------------------------------------
-// Meses: el jefe indica cuántas unidades de cada ítem necesita cada mes
-// ---------------------------------------------------------------------
-
-/** Cantidad de un mes en el formulario: vacío es 0; si no, un entero de 0 en adelante. */
-function cantidadDelMes(form: FormData, campo: string): number {
-  const crudo = String(form.get(campo) ?? '').trim();
-  if (crudo === '') return 0;
-  const n = Number(crudo);
-  if (!Number.isInteger(n) || n < 0) {
-    throw new ErrorDeUsuario('Las cantidades por mes tienen que ser números enteros, de 0 en adelante.');
-  }
-  return n;
+export async function aprobarContabilidad(form: FormData) {
+  const departamentoId = idDe(form, 'departamentoId');
+  await responder(ruta(departamentoId), async () => {
+    const sesion = await exigirSesion();
+    exigir(esContabilidad(sesion), 'Solo contabilidad da la aprobación final.');
+    const p = await cambiarEstado(sesion, departamentoId, { estado: 'aprobado' });
+    return `Presupuesto aprobado por ${money(p?.montoAprobado)}. Sus ítems ya están en las órdenes de compra de cada periodo.`;
+  });
 }
 
-/**
- * Guarda la grilla de meses completa: por cada ítem (campo "linea"), las
- * cantidades m-<ítem>-1 … m-<ítem>-12. La suma de un ítem no puede pasar su
- * cantidad; lo que quede sin repartir aparece como "sin mes". Solo reescribe
- * los ítems que cambiaron, y todo va en una transacción: o se guarda todo o nada.
- */
-export async function guardarMeses(form: FormData) {
+export async function enviarReparos(form: FormData) {
   const departamentoId = idDe(form, 'departamentoId');
-  await responder(`${ruta(departamentoId)}/meses`, async () => {
+  await responder(ruta(departamentoId), async () => {
     const sesion = await exigirSesion();
-    exigir(esJefeDe(sesion, departamentoId), 'Solo el jefe del departamento indica los meses.');
-    const anio = anioFormulacion(sesion);
-
-    const lineaIds = [...new Set(form.getAll('linea').map(Number))].filter((n) => Number.isInteger(n) && n > 0);
-    exigir(lineaIds.length > 0, 'No hay ítems para guardar.');
-
-    const { completos, incompletos } = await comoUsuario(sesion, async (tx) => {
-      const antes = await tx
-        .select({ lineaId: lineaCalendario.lineaId, mes: lineaCalendario.mes, cantidad: lineaCalendario.cantidad })
-        .from(lineaCalendario)
-        .where(inArray(lineaCalendario.lineaId, lineaIds));
-
-      let completos = 0;
-      let incompletos = 0;
-      for (const lineaId of lineaIds) {
-        const l = await exigirLinea(tx, lineaId, departamentoId, anio.id);
-        const reparto = Array.from({ length: 12 }, (_, i) => cantidadDelMes(form, `m-${lineaId}-${i + 1}`));
-        const suma = reparto.reduce((a, b) => a + b, 0);
-        if (suma > l.cantidad) {
-          throw new ErrorDeUsuario(`En "${l.descripcion}" pusiste ${suma} unidades y el ítem tiene ${l.cantidad}.`);
-        }
-        if (suma === l.cantidad) completos++;
-        else incompletos++;
-
-        const anterior = Array.from({ length: 12 }, (_, i) =>
-          antes.find((a) => a.lineaId === lineaId && a.mes === i + 1)?.cantidad ?? 0);
-        if (anterior.every((c, i) => c === reparto[i])) continue;
-
-        await tx.delete(lineaCalendario).where(eq(lineaCalendario.lineaId, lineaId));
-        const filas = reparto
-          .map((cantidad, i) => ({ lineaId, mes: i + 1, cantidad }))
-          .filter((f) => f.cantidad > 0);
-        if (filas.length > 0) await tx.insert(lineaCalendario).values(filas);
-      }
-      return { completos, incompletos };
-    });
-
-    if (incompletos === 0) return 'Meses guardados: todos los ítems tienen sus meses.';
-    return `Meses guardados. ${completos === 0 ? 'Todavía ningún ítem está completo' : `${completos} de ${completos + incompletos} ítems completos`}; `
-      + `${incompletos === 1 ? 'a 1 ítem le faltan' : `a ${incompletos} ítems les faltan`} meses.`;
+    exigir(esContabilidad(sesion), 'Solo contabilidad envía reparos.');
+    const comentario = texto(form, 'comentario', { max: 1000 });
+    exigir(comentario, 'Para enviar reparos hay que escribirle al jefe qué tiene que corregir.');
+    await cambiarEstado(sesion, departamentoId, { estado: 'con_reparos', comentarioContabilidad: comentario });
+    return 'Reparos enviados al jefe. Cuando los corrija, el presupuesto vuelve directo a ti.';
   });
 }

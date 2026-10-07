@@ -4,9 +4,11 @@ import { ayuda, tarjeta } from './ui';
 import type { EstadoPresupuesto, ResumenPresupuesto } from '@/lib/formulacion';
 import { money } from '@/lib/formato';
 
-const ORDEN: (EstadoPresupuesto | null)[] = ['aprobado', 'enviado', 'devuelto', 'borrador', null];
+const ORDEN: (EstadoPresupuesto | null)[] = [
+  'aprobado', 'revision_contabilidad', 'con_reparos', 'enviado', 'devuelto', 'borrador', null,
+];
 
-/** Cuántos departamentos van en cada estado, con el avance hacia "todos aprobados". */
+/** Cuántos departamentos van en cada estado, con el avance hacia "todos aprobados" por contabilidad. */
 export function ResumenFormulacion({ filas }: { filas: ResumenPresupuesto[] }) {
   const cuenta = (e: EstadoPresupuesto | null) => filas.filter((f) => f.estado === e).length;
   const aprobados = cuenta('aprobado');

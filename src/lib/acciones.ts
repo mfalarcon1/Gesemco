@@ -42,9 +42,11 @@ export async function comoUsuario<T>(sesion: Sesion, trabajo: (tx: Tx) => Promis
 
 // Mensajes para las restricciones cuyo texto por defecto es técnico.
 const POR_RESTRICCION: Record<string, string> = {
-  uq_programa_nombre: 'Ya hay un programa con ese nombre en este presupuesto.',
+  uq_programa_nombre: 'Ya hay un programa con ese nombre en este periodo.',
+  programa_periodo_fkey: 'Ese periodo no existe: el año tiene los periodos 1, 2 y 3.',
   uq_presupuesto_depto_anio: 'Este departamento ya tiene presupuesto para ese año.',
   ck_devuelto_con_comentario: 'Para devolver el presupuesto hay que escribirle un comentario al jefe.',
+  ck_reparos_con_comentario: 'Para enviar reparos hay que escribirle al jefe qué tiene que corregir.',
   ck_denegado_con_explicacion: 'Para denegar hay que explicarle el motivo al jefe.',
   linea_presupuesto_cantidad_check: 'La cantidad tiene que ser mayor que cero.',
   linea_presupuesto_precio_unitario_check: 'El precio no puede ser negativo.',

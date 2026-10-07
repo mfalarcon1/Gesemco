@@ -1,10 +1,10 @@
-import { pgTable, index, uniqueIndex, foreignKey, unique, check, serial, integer, date, text, boolean, timestamp, smallint, bigserial, bigint, jsonb, primaryKey, pgView, numeric, pgEnum } from "drizzle-orm/pg-core"
+import { pgTable, unique, serial, text, boolean, timestamp, foreignKey, check, integer, smallint, date, uniqueIndex, index, bigserial, bigint, jsonb, primaryKey, pgView, numeric, pgEnum } from "drizzle-orm/pg-core"
 import { sql } from "drizzle-orm"
 
 export const accionBitacora = pgEnum("accion_bitacora", ['crear', 'actualizar', 'cambiar_estado', 'eliminar'])
 export const estadoOrden = pgEnum("estado_orden", ['borrador', 'pendiente_direccion', 'emitida', 'denegada', 'comprada', 'recibida', 'anulada'])
 export const estadoPendiente = pgEnum("estado_pendiente", ['pendiente', 'aprobado', 'denegado'])
-export const estadoPresupuesto = pgEnum("estado_presupuesto", ['borrador', 'enviado', 'devuelto', 'aprobado'])
+export const estadoPresupuesto = pgEnum("estado_presupuesto", ['borrador', 'enviado', 'devuelto', 'revision_contabilidad', 'con_reparos', 'aprobado'])
 export const estadoSolicitud = pgEnum("estado_solicitud", ['borrador', 'enviada', 'aprobada', 'rechazada', 'anulada'])
 export const etapaAnio = pgEnum("etapa_anio", ['formulacion', 'ejecucion', 'cerrado'])
 export const plataformaTienda = pgEnum("plataforma_tienda", ['vtex', 'woocommerce', 'shopify', 'jumpseller', 'mercado_publico', 'manual'])
@@ -12,32 +12,6 @@ export const rolSistema = pgEnum("rol_sistema", ['profesor', 'jefe_departamento'
 export const tipoAdjunto = pgEnum("tipo_adjunto", ['cotizacion', 'factura', 'boleta', 'orden_firmada', 'otro'])
 export const tipoDocumento = pgEnum("tipo_documento", ['factura', 'boleta', 'otro'])
 
-
-export const rolAsignado = pgTable("rol_asignado", {
-	id: serial().primaryKey().notNull(),
-	usuarioId: integer("usuario_id").notNull(),
-	rol: rolSistema().notNull(),
-	departamentoId: integer("departamento_id"),
-	desde: date().default(sql`CURRENT_DATE`).notNull(),
-	hasta: date(),
-}, (table) => [
-	index("ix_rol_departamento").using("btree", table.departamentoId.asc().nullsLast().op("int4_ops")),
-	index("ix_rol_usuario").using("btree", table.usuarioId.asc().nullsLast().op("int4_ops")),
-	uniqueIndex("uq_un_jefe_vigente").using("btree", table.departamentoId.asc().nullsLast().op("int4_ops")).where(sql`((rol = 'jefe_departamento'::rol_sistema) AND (hasta IS NULL))`),
-	foreignKey({
-			columns: [table.usuarioId],
-			foreignColumns: [usuario.id],
-			name: "rol_asignado_usuario_id_fkey"
-		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.departamentoId],
-			foreignColumns: [departamento.id],
-			name: "rol_asignado_departamento_id_fkey"
-		}),
-	unique("uq_rol").on(table.usuarioId, table.rol, table.departamentoId),
-	check("ck_rol_ambito", sql`(rol = ANY (ARRAY['profesor'::rol_sistema, 'jefe_departamento'::rol_sistema])) = (departamento_id IS NOT NULL)`),
-	check("ck_vigencia", sql`(hasta IS NULL) OR (hasta >= desde)`),
-]);
 
 export const colegio = pgTable("colegio", {
 	id: serial().primaryKey().notNull(),
@@ -57,6 +31,7 @@ export const anioPresupuestario = pgTable("anio_presupuestario", {
 	anio: smallint().notNull(),
 	etapa: etapaAnio().default('formulacion').notNull(),
 	fechaApertura: date("fecha_apertura").default(sql`CURRENT_DATE`).notNull(),
+	formulacionHasta: date("formulacion_hasta"),
 	fechaCierre: date("fecha_cierre"),
 }, (table) => [
 	foreignKey({
@@ -67,6 +42,7 @@ export const anioPresupuestario = pgTable("anio_presupuestario", {
 	unique("uq_anio_colegio").on(table.colegioId, table.anio),
 	check("ck_anio_rango", sql`(anio >= 2020) AND (anio <= 2100)`),
 	check("ck_anio_cierre", sql`(etapa = 'cerrado'::etapa_anio) = (fecha_cierre IS NOT NULL)`),
+	check("ck_anio_plazo", sql`(formulacion_hasta IS NULL) OR (formulacion_hasta >= fecha_apertura)`),
 ]);
 
 export const usuario = pgTable("usuario", {
@@ -101,6 +77,32 @@ export const departamento = pgTable("departamento", {
 			name: "departamento_colegio_id_fkey"
 		}),
 	unique("uq_departamento_nombre").on(table.colegioId, table.nombre),
+]);
+
+export const rolAsignado = pgTable("rol_asignado", {
+	id: serial().primaryKey().notNull(),
+	usuarioId: integer("usuario_id").notNull(),
+	rol: rolSistema().notNull(),
+	departamentoId: integer("departamento_id"),
+	desde: date().default(sql`CURRENT_DATE`).notNull(),
+	hasta: date(),
+}, (table) => [
+	index("ix_rol_departamento").using("btree", table.departamentoId.asc().nullsLast().op("int4_ops")),
+	index("ix_rol_usuario").using("btree", table.usuarioId.asc().nullsLast().op("int4_ops")),
+	uniqueIndex("uq_un_jefe_vigente").using("btree", table.departamentoId.asc().nullsLast().op("int4_ops")).where(sql`((rol = 'jefe_departamento'::rol_sistema) AND (hasta IS NULL))`),
+	foreignKey({
+			columns: [table.usuarioId],
+			foreignColumns: [usuario.id],
+			name: "rol_asignado_usuario_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.departamentoId],
+			foreignColumns: [departamento.id],
+			name: "rol_asignado_departamento_id_fkey"
+		}),
+	unique("uq_rol").on(table.usuarioId, table.rol, table.departamentoId),
+	check("ck_rol_ambito", sql`(rol = ANY (ARRAY['profesor'::rol_sistema, 'jefe_departamento'::rol_sistema])) = (departamento_id IS NOT NULL)`),
+	check("ck_vigencia", sql`(hasta IS NULL) OR (hasta >= desde)`),
 ]);
 
 export const cuentaContable = pgTable("cuenta_contable", {
@@ -205,9 +207,12 @@ export const presupuestoDepartamento = pgTable("presupuesto_departamento", {
 	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
 	montoAprobado: bigint("monto_aprobado", { mode: "number" }),
 	enviadoEn: timestamp("enviado_en", { withTimezone: true, mode: 'string' }),
-	resueltoEn: timestamp("resuelto_en", { withTimezone: true, mode: 'string' }),
-	resueltoPor: integer("resuelto_por"),
+	resueltoDireccionEn: timestamp("resuelto_direccion_en", { withTimezone: true, mode: 'string' }),
+	resueltoDireccionPor: integer("resuelto_direccion_por"),
 	comentarioDireccion: text("comentario_direccion"),
+	resueltoContabilidadEn: timestamp("resuelto_contabilidad_en", { withTimezone: true, mode: 'string' }),
+	resueltoContabilidadPor: integer("resuelto_contabilidad_por"),
+	comentarioContabilidad: text("comentario_contabilidad"),
 	creadoEn: timestamp("creado_en", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 }, (table) => [
 	index("ix_presupuesto_anio").using("btree", table.anioId.asc().nullsLast().op("int4_ops")),
@@ -222,36 +227,20 @@ export const presupuestoDepartamento = pgTable("presupuesto_departamento", {
 			name: "presupuesto_departamento_anio_id_fkey"
 		}),
 	foreignKey({
-			columns: [table.resueltoPor],
+			columns: [table.resueltoDireccionPor],
 			foreignColumns: [usuario.id],
-			name: "presupuesto_departamento_resuelto_por_fkey"
+			name: "presupuesto_departamento_resuelto_direccion_por_fkey"
+		}),
+	foreignKey({
+			columns: [table.resueltoContabilidadPor],
+			foreignColumns: [usuario.id],
+			name: "presupuesto_departamento_resuelto_contabilidad_por_fkey"
 		}),
 	unique("uq_presupuesto_depto_anio").on(table.departamentoId, table.anioId),
 	check("presupuesto_departamento_monto_aprobado_check", sql`monto_aprobado >= 0`),
 	check("ck_aprobado_congelado", sql`(estado = 'aprobado'::estado_presupuesto) = (monto_aprobado IS NOT NULL)`),
 	check("ck_devuelto_con_comentario", sql`(estado <> 'devuelto'::estado_presupuesto) OR (NULLIF(btrim(comentario_direccion), ''::text) IS NOT NULL)`),
-]);
-
-export const programa = pgTable("programa", {
-	id: serial().primaryKey().notNull(),
-	presupuestoId: integer("presupuesto_id").notNull(),
-	nombre: text().notNull(),
-	descripcion: text(),
-	creadoPor: integer("creado_por"),
-	creadoEn: timestamp("creado_en", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
-}, (table) => [
-	index("ix_programa_presupuesto").using("btree", table.presupuestoId.asc().nullsLast().op("int4_ops")),
-	uniqueIndex("uq_programa_nombre").using("btree", sql`presupuesto_id`, sql`lower(nombre)`),
-	foreignKey({
-			columns: [table.presupuestoId],
-			foreignColumns: [presupuestoDepartamento.id],
-			name: "programa_presupuesto_id_fkey"
-		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.creadoPor],
-			foreignColumns: [usuario.id],
-			name: "programa_creado_por_fkey"
-		}),
+	check("ck_reparos_con_comentario", sql`(estado <> 'con_reparos'::estado_presupuesto) OR (NULLIF(btrim(comentario_contabilidad), ''::text) IS NOT NULL)`),
 ]);
 
 export const lineaPresupuesto = pgTable("linea_presupuesto", {
@@ -289,20 +278,43 @@ export const lineaPresupuesto = pgTable("linea_presupuesto", {
 	check("linea_presupuesto_precio_unitario_check", sql`precio_unitario >= 0`),
 ]);
 
-export const lineaCalendario = pgTable("linea_calendario", {
+export const programa = pgTable("programa", {
 	id: serial().primaryKey().notNull(),
-	lineaId: integer("linea_id").notNull(),
-	mes: smallint().notNull(),
-	cantidad: integer().notNull(),
+	presupuestoId: integer("presupuesto_id").notNull(),
+	periodo: smallint().notNull(),
+	nombre: text().notNull(),
+	descripcion: text(),
+	creadoPor: integer("creado_por"),
+	creadoEn: timestamp("creado_en", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 }, (table) => [
+	index("ix_programa_presupuesto").using("btree", table.presupuestoId.asc().nullsLast().op("int4_ops"), table.periodo.asc().nullsLast().op("int2_ops")),
+	uniqueIndex("uq_programa_nombre").using("btree", sql`presupuesto_id`, sql`periodo`, sql`lower(nombre)`),
 	foreignKey({
-			columns: [table.lineaId],
-			foreignColumns: [lineaPresupuesto.id],
-			name: "linea_calendario_linea_id_fkey"
+			columns: [table.presupuestoId],
+			foreignColumns: [presupuestoDepartamento.id],
+			name: "programa_presupuesto_id_fkey"
 		}).onDelete("cascade"),
-	unique("uq_linea_mes").on(table.lineaId, table.mes),
-	check("linea_calendario_mes_check", sql`(mes >= 1) AND (mes <= 12)`),
-	check("linea_calendario_cantidad_check", sql`cantidad > 0`),
+	foreignKey({
+			columns: [table.periodo],
+			foreignColumns: [periodo.numero],
+			name: "programa_periodo_fkey"
+		}),
+	foreignKey({
+			columns: [table.creadoPor],
+			foreignColumns: [usuario.id],
+			name: "programa_creado_por_fkey"
+		}),
+]);
+
+export const periodo = pgTable("periodo", {
+	numero: smallint().primaryKey().notNull(),
+	nombre: text().notNull(),
+	mesDesde: smallint("mes_desde").notNull(),
+	mesHasta: smallint("mes_hasta").notNull(),
+}, (table) => [
+	unique("periodo_nombre_key").on(table.nombre),
+	check("periodo_numero_check", sql`(numero >= 1) AND (numero <= 3)`),
+	check("ck_periodo_meses", sql`((mes_desde >= 1) AND (mes_desde <= 12)) AND ((mes_hasta >= mes_desde) AND (mes_hasta <= 12))`),
 ]);
 
 export const solicitudCompra = pgTable("solicitud_compra", {
@@ -419,16 +431,6 @@ export const itemOrden = pgTable("item_orden", {
 	index("ix_item_orden").using("btree", table.ordenId.asc().nullsLast().op("int4_ops")),
 	index("ix_item_orden_linea").using("btree", table.lineaId.asc().nullsLast().op("int4_ops")),
 	foreignKey({
-			columns: [table.articuloId],
-			foreignColumns: [articulo.id],
-			name: "item_orden_articulo_id_fkey"
-		}),
-	foreignKey({
-			columns: [table.cuentaContableId],
-			foreignColumns: [cuentaContable.id],
-			name: "item_orden_cuenta_contable_id_fkey"
-		}),
-	foreignKey({
 			columns: [table.ordenId],
 			foreignColumns: [ordenCompra.id],
 			name: "item_orden_orden_id_fkey"
@@ -437,6 +439,16 @@ export const itemOrden = pgTable("item_orden", {
 			columns: [table.lineaId],
 			foreignColumns: [lineaPresupuesto.id],
 			name: "item_orden_linea_id_fkey"
+		}),
+	foreignKey({
+			columns: [table.articuloId],
+			foreignColumns: [articulo.id],
+			name: "item_orden_articulo_id_fkey"
+		}),
+	foreignKey({
+			columns: [table.cuentaContableId],
+			foreignColumns: [cuentaContable.id],
+			name: "item_orden_cuenta_contable_id_fkey"
 		}),
 	check("item_orden_cantidad_check", sql`cantidad > 0`),
 	check("item_orden_precio_presupuesto_check", sql`precio_presupuesto >= 0`),
@@ -620,6 +632,113 @@ export const folioContador = pgTable("folio_contador", {
 		}),
 	primaryKey({ columns: [table.anioId, table.prefijo], name: "folio_contador_pkey"}),
 ]);
+export const vwSaldoDepartamento = pgView("vw_saldo_departamento", {	colegioId: integer("colegio_id"),
+	departamentoId: integer("departamento_id"),
+	departamento: text(),
+	centroCosto: text("centro_costo"),
+	anioId: integer("anio_id"),
+	anio: smallint(),
+	presupuestoId: integer("presupuesto_id"),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	aprobado: bigint({ mode: "number" }),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	modificaciones: bigint({ mode: "number" }),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	vigente: bigint({ mode: "number" }),
+	comprometido: numeric(),
+	ejecutado: numeric(),
+	disponible: numeric(),
+	enPendiente: numeric("en_pendiente"),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	pendientes: bigint({ mode: "number" }),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	gastoReal: bigint("gasto_real", { mode: "number" }),
+	desviacion: numeric(),
+	pctUsado: numeric("pct_usado"),
+	pctEjecutado: numeric("pct_ejecutado"),
+}).as(sql`WITH ordenes AS ( SELECT orden_compra.presupuesto_id, COALESCE(sum(orden_compra.monto_presupuesto) FILTER (WHERE orden_compra.estado = 'emitida'::estado_orden), 0::numeric) AS comprometido, COALESCE(sum(orden_compra.monto_presupuesto) FILTER (WHERE orden_compra.estado = ANY (ARRAY['comprada'::estado_orden, 'recibida'::estado_orden])), 0::numeric) AS ejecutado, COALESCE(sum(orden_compra.monto_presupuesto) FILTER (WHERE orden_compra.estado = 'pendiente_direccion'::estado_orden), 0::numeric) AS en_pendiente, count(*) FILTER (WHERE orden_compra.estado = 'pendiente_direccion'::estado_orden) AS pendientes FROM orden_compra GROUP BY orden_compra.presupuesto_id ), reales AS ( SELECT oc.presupuesto_id, sum(c.monto_total) AS gasto_real, sum(c.monto_total) FILTER (WHERE oc.estado = ANY (ARRAY['comprada'::estado_orden, 'recibida'::estado_orden])) AS real_ejecutado FROM compra c JOIN orden_compra oc ON oc.id = c.orden_id GROUP BY oc.presupuesto_id ) SELECT v.colegio_id, v.departamento_id, v.departamento, v.centro_costo, v.anio_id, v.anio, v.presupuesto_id, v.monto_aprobado AS aprobado, v.modificaciones, v.vigente, COALESCE(o.comprometido, 0::numeric) AS comprometido, COALESCE(o.ejecutado, 0::numeric) AS ejecutado, v.vigente::numeric - COALESCE(o.comprometido, 0::numeric) - COALESCE(o.ejecutado, 0::numeric) AS disponible, COALESCE(o.en_pendiente, 0::numeric) AS en_pendiente, COALESCE(o.pendientes, 0::bigint) AS pendientes, COALESCE(r.gasto_real, 0::bigint) AS gasto_real, COALESCE(r.real_ejecutado, 0::bigint)::numeric - COALESCE(o.ejecutado, 0::numeric) AS desviacion, round(100.0 * (COALESCE(o.comprometido, 0::numeric) + COALESCE(o.ejecutado, 0::numeric)) / NULLIF(v.vigente, 0)::numeric, 1) AS pct_usado, round(100.0 * COALESCE(o.ejecutado, 0::numeric) / NULLIF(v.vigente, 0)::numeric, 1) AS pct_ejecutado FROM vw_presupuesto_departamento v LEFT JOIN ordenes o ON o.presupuesto_id = v.presupuesto_id LEFT JOIN reales r ON r.presupuesto_id = v.presupuesto_id WHERE v.estado = 'aprobado'::estado_presupuesto`);
+
+export const vwProyeccionPeriodo = pgView("vw_proyeccion_periodo", {	presupuestoId: integer("presupuesto_id"),
+	colegioId: integer("colegio_id"),
+	departamentoId: integer("departamento_id"),
+	departamento: text(),
+	centroCosto: text("centro_costo"),
+	anioId: integer("anio_id"),
+	anio: smallint(),
+	estado: estadoPresupuesto(),
+	periodo: smallint(),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	programas: bigint({ mode: "number" }),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	lineas: bigint({ mode: "number" }),
+	monto: numeric(),
+}).as(sql`SELECT pd.id AS presupuesto_id, d.colegio_id, d.id AS departamento_id, d.nombre AS departamento, d.centro_costo, ap.id AS anio_id, ap.anio, pd.estado, p.periodo, count(DISTINCT p.id) AS programas, count(l.id) AS lineas, COALESCE(sum(l.subtotal), 0::numeric) AS monto FROM programa p JOIN presupuesto_departamento pd ON pd.id = p.presupuesto_id JOIN departamento d ON d.id = pd.departamento_id JOIN anio_presupuestario ap ON ap.id = pd.anio_id LEFT JOIN linea_presupuesto l ON l.programa_id = p.id GROUP BY pd.id, d.id, ap.id, p.periodo`);
+
+export const vwOrdenPeriodo = pgView("vw_orden_periodo", {	colegioId: integer("colegio_id"),
+	anioId: integer("anio_id"),
+	anio: smallint(),
+	periodo: smallint(),
+	departamentoId: integer("departamento_id"),
+	departamento: text(),
+	centroCosto: text("centro_costo"),
+	presupuestoId: integer("presupuesto_id"),
+	programaId: integer("programa_id"),
+	programa: text(),
+	lineaId: integer("linea_id"),
+	articuloId: integer("articulo_id"),
+	descripcion: text(),
+	cantidad: integer(),
+	precioUnitario: integer("precio_unitario"),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	subtotal: bigint({ mode: "number" }),
+	fueraCatalogo: boolean("fuera_catalogo"),
+	cuentaCodigo: text("cuenta_codigo"),
+	cuentaNombre: text("cuenta_nombre"),
+}).as(sql`SELECT ap.colegio_id, ap.id AS anio_id, ap.anio, p.periodo, d.id AS departamento_id, d.nombre AS departamento, d.centro_costo, pd.id AS presupuesto_id, p.id AS programa_id, p.nombre AS programa, l.id AS linea_id, l.articulo_id, l.descripcion, l.cantidad, l.precio_unitario, l.subtotal, l.fuera_catalogo, cc.codigo AS cuenta_codigo, cc.nombre AS cuenta_nombre FROM linea_presupuesto l JOIN programa p ON p.id = l.programa_id JOIN presupuesto_departamento pd ON pd.id = p.presupuesto_id JOIN departamento d ON d.id = pd.departamento_id JOIN anio_presupuestario ap ON ap.id = pd.anio_id LEFT JOIN cuenta_contable cc ON cc.id = l.cuenta_contable_id WHERE pd.estado = 'aprobado'::estado_presupuesto`);
+
+export const vwConsolidadoColegio = pgView("vw_consolidado_colegio", {	colegioId: integer("colegio_id"),
+	colegio: text(),
+	anioId: integer("anio_id"),
+	anio: smallint(),
+	vigente: numeric(),
+	comprometido: numeric(),
+	ejecutado: numeric(),
+	disponible: numeric(),
+	gastoReal: numeric("gasto_real"),
+	desviacion: numeric(),
+	pctUsado: numeric("pct_usado"),
+}).as(sql`SELECT c.id AS colegio_id, c.nombre AS colegio, s.anio_id, s.anio, sum(s.vigente) AS vigente, sum(s.comprometido) AS comprometido, sum(s.ejecutado) AS ejecutado, sum(s.disponible) AS disponible, sum(s.gasto_real) AS gasto_real, sum(s.desviacion) AS desviacion, round(100.0 * (sum(s.comprometido) + sum(s.ejecutado)) / NULLIF(sum(s.vigente), 0::numeric), 1) AS pct_usado FROM vw_saldo_departamento s JOIN colegio c ON c.id = s.colegio_id GROUP BY c.id, s.anio_id, s.anio`);
+
+export const vwPresupuestoDepartamento = pgView("vw_presupuesto_departamento", {	colegioId: integer("colegio_id"),
+	departamentoId: integer("departamento_id"),
+	departamento: text(),
+	centroCosto: text("centro_costo"),
+	anioId: integer("anio_id"),
+	anio: smallint(),
+	etapa: etapaAnio(),
+	formulacionHasta: date("formulacion_hasta"),
+	presupuestoId: integer("presupuesto_id"),
+	estado: estadoPresupuesto(),
+	enviadoEn: timestamp("enviado_en", { withTimezone: true, mode: 'string' }),
+	resueltoDireccionEn: timestamp("resuelto_direccion_en", { withTimezone: true, mode: 'string' }),
+	comentarioDireccion: text("comentario_direccion"),
+	resueltoContabilidadEn: timestamp("resuelto_contabilidad_en", { withTimezone: true, mode: 'string' }),
+	comentarioContabilidad: text("comentario_contabilidad"),
+	enContabilidadDesde: timestamp("en_contabilidad_desde", { withTimezone: true, mode: 'string' }),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	programas: bigint({ mode: "number" }),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	lineas: bigint({ mode: "number" }),
+	formulado: numeric(),
+	fueraCatalogo: numeric("fuera_catalogo"),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	montoAprobado: bigint("monto_aprobado", { mode: "number" }),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	modificaciones: bigint({ mode: "number" }),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	vigente: bigint({ mode: "number" }),
+}).as(sql`WITH lineas AS ( SELECT p.presupuesto_id, count(DISTINCT p.id) AS programas, count(l_1.id) AS lineas, COALESCE(sum(l_1.subtotal), 0::numeric) AS formulado, COALESCE(sum(l_1.subtotal) FILTER (WHERE l_1.articulo_id IS NULL), 0::numeric) AS fuera_catalogo FROM programa p LEFT JOIN linea_presupuesto l_1 ON l_1.programa_id = p.id GROUP BY p.presupuesto_id ), modificaciones AS ( SELECT modificacion_presupuestaria.presupuesto_id, sum(modificacion_presupuestaria.monto) AS modificaciones FROM modificacion_presupuestaria GROUP BY modificacion_presupuestaria.presupuesto_id ) SELECT d.colegio_id, d.id AS departamento_id, d.nombre AS departamento, d.centro_costo, ap.id AS anio_id, ap.anio, ap.etapa, ap.formulacion_hasta, pd.id AS presupuesto_id, pd.estado, pd.enviado_en, pd.resuelto_direccion_en, pd.comentario_direccion, pd.resuelto_contabilidad_en, pd.comentario_contabilidad, CASE WHEN pd.estado = 'revision_contabilidad'::estado_presupuesto THEN GREATEST(pd.resuelto_direccion_en, pd.enviado_en) ELSE NULL::timestamp with time zone END AS en_contabilidad_desde, COALESCE(l.programas, 0::bigint) AS programas, COALESCE(l.lineas, 0::bigint) AS lineas, COALESCE(l.formulado, 0::numeric) AS formulado, COALESCE(l.fuera_catalogo, 0::numeric) AS fuera_catalogo, pd.monto_aprobado, COALESCE(m.modificaciones, 0::bigint) AS modificaciones, CASE WHEN pd.estado = 'aprobado'::estado_presupuesto THEN pd.monto_aprobado + COALESCE(m.modificaciones, 0::bigint) ELSE 0::bigint END AS vigente FROM departamento d JOIN anio_presupuestario ap ON ap.colegio_id = d.colegio_id LEFT JOIN presupuesto_departamento pd ON pd.departamento_id = d.id AND pd.anio_id = ap.id LEFT JOIN lineas l ON l.presupuesto_id = pd.id LEFT JOIN modificaciones m ON m.presupuesto_id = pd.id WHERE d.activo`);
+
 export const vwPrecioVigente = pgView("vw_precio_vigente", {	productoTiendaId: integer("producto_tienda_id"),
 	articuloId: integer("articulo_id"),
 	tiendaId: integer("tienda_id"),
@@ -648,91 +767,3 @@ export const vwCatalogoArticulo = pgView("vw_catalogo_articulo", {	articuloId: i
 	precioReferencia: integer("precio_referencia"),
 	actualizadoEn: timestamp("actualizado_en", { withTimezone: true, mode: 'string' }),
 }).as(sql`SELECT a.id AS articulo_id, a.nombre, a.descripcion, a.unidad, c.id AS categoria_id, c.nombre AS categoria, c.cuenta_contable_id, count(pv.producto_tienda_id) AS ofertas, min(pv.precio_con_iva) AS precio_min, max(pv.precio_con_iva) AS precio_max, round(percentile_cont(0.5::double precision) WITHIN GROUP (ORDER BY (pv.precio_con_iva::double precision)))::integer AS precio_referencia, max(pv.observado_en) AS actualizado_en FROM articulo a JOIN categoria_articulo c ON c.id = a.categoria_id LEFT JOIN vw_precio_vigente pv ON pv.articulo_id = a.id WHERE a.activo GROUP BY a.id, c.id`);
-
-export const vwPresupuestoDepartamento = pgView("vw_presupuesto_departamento", {	colegioId: integer("colegio_id"),
-	departamentoId: integer("departamento_id"),
-	departamento: text(),
-	centroCosto: text("centro_costo"),
-	anioId: integer("anio_id"),
-	anio: smallint(),
-	etapa: etapaAnio(),
-	presupuestoId: integer("presupuesto_id"),
-	estado: estadoPresupuesto(),
-	enviadoEn: timestamp("enviado_en", { withTimezone: true, mode: 'string' }),
-	resueltoEn: timestamp("resuelto_en", { withTimezone: true, mode: 'string' }),
-	comentarioDireccion: text("comentario_direccion"),
-	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
-	programas: bigint({ mode: "number" }),
-	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
-	lineas: bigint({ mode: "number" }),
-	formulado: numeric(),
-	fueraCatalogo: numeric("fuera_catalogo"),
-	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
-	montoAprobado: bigint("monto_aprobado", { mode: "number" }),
-	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
-	modificaciones: bigint({ mode: "number" }),
-	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
-	vigente: bigint({ mode: "number" }),
-}).as(sql`WITH lineas AS ( SELECT p.presupuesto_id, count(DISTINCT p.id) AS programas, count(l_1.id) AS lineas, COALESCE(sum(l_1.subtotal), 0::numeric) AS formulado, COALESCE(sum(l_1.subtotal) FILTER (WHERE l_1.articulo_id IS NULL), 0::numeric) AS fuera_catalogo FROM programa p LEFT JOIN linea_presupuesto l_1 ON l_1.programa_id = p.id GROUP BY p.presupuesto_id ), modificaciones AS ( SELECT modificacion_presupuestaria.presupuesto_id, sum(modificacion_presupuestaria.monto) AS modificaciones FROM modificacion_presupuestaria GROUP BY modificacion_presupuestaria.presupuesto_id ) SELECT d.colegio_id, d.id AS departamento_id, d.nombre AS departamento, d.centro_costo, ap.id AS anio_id, ap.anio, ap.etapa, pd.id AS presupuesto_id, pd.estado, pd.enviado_en, pd.resuelto_en, pd.comentario_direccion, COALESCE(l.programas, 0::bigint) AS programas, COALESCE(l.lineas, 0::bigint) AS lineas, COALESCE(l.formulado, 0::numeric) AS formulado, COALESCE(l.fuera_catalogo, 0::numeric) AS fuera_catalogo, pd.monto_aprobado, COALESCE(m.modificaciones, 0::bigint) AS modificaciones, CASE WHEN pd.estado = 'aprobado'::estado_presupuesto THEN pd.monto_aprobado + COALESCE(m.modificaciones, 0::bigint) ELSE 0::bigint END AS vigente FROM departamento d JOIN anio_presupuestario ap ON ap.colegio_id = d.colegio_id LEFT JOIN presupuesto_departamento pd ON pd.departamento_id = d.id AND pd.anio_id = ap.id LEFT JOIN lineas l ON l.presupuesto_id = pd.id LEFT JOIN modificaciones m ON m.presupuesto_id = pd.id WHERE d.activo`);
-
-export const vwSaldoDepartamento = pgView("vw_saldo_departamento", {	colegioId: integer("colegio_id"),
-	departamentoId: integer("departamento_id"),
-	departamento: text(),
-	centroCosto: text("centro_costo"),
-	anioId: integer("anio_id"),
-	anio: smallint(),
-	presupuestoId: integer("presupuesto_id"),
-	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
-	aprobado: bigint({ mode: "number" }),
-	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
-	modificaciones: bigint({ mode: "number" }),
-	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
-	vigente: bigint({ mode: "number" }),
-	comprometido: numeric(),
-	ejecutado: numeric(),
-	disponible: numeric(),
-	enPendiente: numeric("en_pendiente"),
-	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
-	pendientes: bigint({ mode: "number" }),
-	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
-	gastoReal: bigint("gasto_real", { mode: "number" }),
-	desviacion: numeric(),
-	pctUsado: numeric("pct_usado"),
-	pctEjecutado: numeric("pct_ejecutado"),
-}).as(sql`WITH ordenes AS ( SELECT orden_compra.presupuesto_id, COALESCE(sum(orden_compra.monto_presupuesto) FILTER (WHERE orden_compra.estado = 'emitida'::estado_orden), 0::numeric) AS comprometido, COALESCE(sum(orden_compra.monto_presupuesto) FILTER (WHERE orden_compra.estado = ANY (ARRAY['comprada'::estado_orden, 'recibida'::estado_orden])), 0::numeric) AS ejecutado, COALESCE(sum(orden_compra.monto_presupuesto) FILTER (WHERE orden_compra.estado = 'pendiente_direccion'::estado_orden), 0::numeric) AS en_pendiente, count(*) FILTER (WHERE orden_compra.estado = 'pendiente_direccion'::estado_orden) AS pendientes FROM orden_compra GROUP BY orden_compra.presupuesto_id ), reales AS ( SELECT oc.presupuesto_id, sum(c.monto_total) AS gasto_real, sum(c.monto_total) FILTER (WHERE oc.estado = ANY (ARRAY['comprada'::estado_orden, 'recibida'::estado_orden])) AS real_ejecutado FROM compra c JOIN orden_compra oc ON oc.id = c.orden_id GROUP BY oc.presupuesto_id ) SELECT v.colegio_id, v.departamento_id, v.departamento, v.centro_costo, v.anio_id, v.anio, v.presupuesto_id, v.monto_aprobado AS aprobado, v.modificaciones, v.vigente, COALESCE(o.comprometido, 0::numeric) AS comprometido, COALESCE(o.ejecutado, 0::numeric) AS ejecutado, v.vigente::numeric - COALESCE(o.comprometido, 0::numeric) - COALESCE(o.ejecutado, 0::numeric) AS disponible, COALESCE(o.en_pendiente, 0::numeric) AS en_pendiente, COALESCE(o.pendientes, 0::bigint) AS pendientes, COALESCE(r.gasto_real, 0::bigint) AS gasto_real, COALESCE(r.real_ejecutado, 0::bigint)::numeric - COALESCE(o.ejecutado, 0::numeric) AS desviacion, round(100.0 * (COALESCE(o.comprometido, 0::numeric) + COALESCE(o.ejecutado, 0::numeric)) / NULLIF(v.vigente, 0)::numeric, 1) AS pct_usado, round(100.0 * COALESCE(o.ejecutado, 0::numeric) / NULLIF(v.vigente, 0)::numeric, 1) AS pct_ejecutado FROM vw_presupuesto_departamento v LEFT JOIN ordenes o ON o.presupuesto_id = v.presupuesto_id LEFT JOIN reales r ON r.presupuesto_id = v.presupuesto_id WHERE v.estado = 'aprobado'::estado_presupuesto`);
-
-export const vwProyeccionMensual = pgView("vw_proyeccion_mensual", {	presupuestoId: integer("presupuesto_id"),
-	colegioId: integer("colegio_id"),
-	departamentoId: integer("departamento_id"),
-	departamento: text(),
-	anioId: integer("anio_id"),
-	anio: smallint(),
-	estado: estadoPresupuesto(),
-	mes: smallint(),
-	monto: numeric(),
-}).as(sql`SELECT pd.id AS presupuesto_id, d.colegio_id, d.id AS departamento_id, d.nombre AS departamento, ap.id AS anio_id, ap.anio, pd.estado, lc.mes, sum(lc.cantidad::bigint * l.precio_unitario) AS monto FROM linea_calendario lc JOIN linea_presupuesto l ON l.id = lc.linea_id JOIN programa p ON p.id = l.programa_id JOIN presupuesto_departamento pd ON pd.id = p.presupuesto_id JOIN departamento d ON d.id = pd.departamento_id JOIN anio_presupuestario ap ON ap.id = pd.anio_id GROUP BY pd.id, d.id, ap.id, lc.mes`);
-
-export const vwCalendarizacionLinea = pgView("vw_calendarizacion_linea", {	lineaId: integer("linea_id"),
-	programaId: integer("programa_id"),
-	presupuestoId: integer("presupuesto_id"),
-	cantidad: integer(),
-	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
-	cantidadConMes: bigint("cantidad_con_mes", { mode: "number" }),
-	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
-	cantidadSinMes: bigint("cantidad_sin_mes", { mode: "number" }),
-	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
-	montoSinMes: bigint("monto_sin_mes", { mode: "number" }),
-}).as(sql`SELECT l.id AS linea_id, l.programa_id, p.presupuesto_id, l.cantidad, COALESCE(sum(lc.cantidad), 0::bigint) AS cantidad_con_mes, l.cantidad - COALESCE(sum(lc.cantidad), 0::bigint) AS cantidad_sin_mes, (l.cantidad - COALESCE(sum(lc.cantidad), 0::bigint)) * l.precio_unitario AS monto_sin_mes FROM linea_presupuesto l JOIN programa p ON p.id = l.programa_id LEFT JOIN linea_calendario lc ON lc.linea_id = l.id GROUP BY l.id, p.id`);
-
-export const vwConsolidadoColegio = pgView("vw_consolidado_colegio", {	colegioId: integer("colegio_id"),
-	colegio: text(),
-	anioId: integer("anio_id"),
-	anio: smallint(),
-	vigente: numeric(),
-	comprometido: numeric(),
-	ejecutado: numeric(),
-	disponible: numeric(),
-	gastoReal: numeric("gasto_real"),
-	desviacion: numeric(),
-	pctUsado: numeric("pct_usado"),
-}).as(sql`SELECT c.id AS colegio_id, c.nombre AS colegio, s.anio_id, s.anio, sum(s.vigente) AS vigente, sum(s.comprometido) AS comprometido, sum(s.ejecutado) AS ejecutado, sum(s.disponible) AS disponible, sum(s.gasto_real) AS gasto_real, sum(s.desviacion) AS desviacion, round(100.0 * (sum(s.comprometido) + sum(s.ejecutado)) / NULLIF(sum(s.vigente), 0::numeric), 1) AS pct_usado FROM vw_saldo_departamento s JOIN colegio c ON c.id = s.colegio_id GROUP BY c.id, s.anio_id, s.anio`);

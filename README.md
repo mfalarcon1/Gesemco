@@ -3,11 +3,15 @@
 Sistema de gestión presupuestaria para los colegios que administra GESEMCO. Funciona en
 dos etapas:
 
-1. **Formulación.** Cada jefe de departamento arma los programas que hará el próximo
-   año, con los artículos que necesita (desde un catálogo con precios de tiendas) o con
-   líneas libres para servicios. Dirección aprueba o devuelve cada presupuesto, y con el
-   presupuesto aprobado el jefe indica cuántas unidades de cada línea necesita en cada
-   mes: así GESEMCO recibe cuánta caja se necesita cada mes.
+1. **Formulación** (septiembre a noviembre del año anterior). El año tiene tres periodos:
+   marzo a mayo, junio a agosto y septiembre a diciembre. Cada jefe de departamento elige
+   un periodo y arma los programas que hará en él, con los artículos que necesita (desde
+   un catálogo con precios de tiendas) o con líneas libres para servicios; un programa que
+   sigue en varios periodos se ingresa en cada uno. Dirección aprueba o devuelve el
+   presupuesto; si lo aprueba, pasa a contabilidad, que lo aprueba o envía reparos. El jefe
+   corrige los reparos y lo reenvía directo a contabilidad. Con lo aprobado salen tres
+   órdenes de compra, una por periodo, del colegio completo y con el detalle de cada
+   departamento.
 2. **Ejecución.** El profesor solicita, el jefe emite la orden de compra y el equipo de
    compra compra. El saldo se controla contra el total anual del departamento, a precio
    presupuesto. Lo que no cabe queda como pendiente de pedido para Dirección.
@@ -47,13 +51,14 @@ distintas personas del colegio de prueba:
 
 | Persona | Rol | Qué probar |
 | --- | --- | --- |
-| Camila Rojas | Jefa de Arte | Presupuesto 2027 en preparación: crea programas, agrega del catálogo o a mano, envíalo |
-| Rodrigo Tapia | Jefe de Matemática | Presupuesto enviado, esperando a Dirección |
-| Sebastián Vidal | Jefe de Ciencia | Presupuesto devuelto con comentario |
-| Luis Pizarro | Jefe de Reproducción de imagen | Presupuesto aprobado, con casi todos los meses indicados |
-| Verónica Soto | Jefa de Biblioteca | Presupuesto aprobado sin meses: indícalos en la grilla |
-| Andrés Bulnes | Dirección | Aprueba o devuelve; ve los pendientes de pedido |
-| Marcela Ovalle | Contabilidad GESEMCO | Ejecución 2026, proyección mensual 2027 y su CSV |
+| Camila Rojas | Jefa de Arte | Presupuesto 2027 en preparación, con programas en los tres periodos: agrega programas e ítems y envíalo |
+| Rodrigo Tapia | Jefe de Matemática | Enviado, esperando a Dirección |
+| Sebastián Vidal | Jefe de Ciencia | Devuelto por Dirección con comentario |
+| Javier Contreras | Jefe de Historia | Con reparos de contabilidad: corrígelo y reenvíalo directo a contabilidad |
+| Luis Pizarro | Jefe de Reproducción de imagen | En revisión de contabilidad (Dirección ya lo aprobó) |
+| Verónica Soto | Jefa de Biblioteca | Aprobado: sus ítems están en las órdenes de compra |
+| Andrés Bulnes | Dirección | Aprueba (pasa a contabilidad) o devuelve; ve los pendientes de pedido |
+| Marcela Ovalle | Contabilidad GESEMCO | Aprueba o envía reparos; órdenes de compra 2027 por periodo y su CSV; ejecución 2026 |
 | Ignacio Vera | Profesor de Matemática y Física | Ve el saldo de sus departamentos |
 
 Sin pgAdmin a mano, `npm run db:reset` hace todo desde la consola. Si prefieres pgAdmin,
@@ -65,19 +70,20 @@ después haz lo mismo con `db/datos_prueba.sql`.
 ```
 db/esquema_gesemco.sql     El modelo: tablas, vistas, triggers y reglas de negocio
 db/datos_prueba.sql        Colegio Santa Úrsula con datos inventados: ejecución 2026 y formulación 2027
-db/pruebas.sql             35 pruebas de las reglas (deshacen todo al terminar)
+db/pruebas.sql             38 pruebas de las reglas (deshacen todo al terminar)
 scripts/db.mjs             db:reset, db:test y db:pull, iguales en Windows y Linux
 src/db/schema.ts           Tipos de TypeScript, GENERADOS desde la base (no editar)
 src/lib/sesion.ts          Quién eres, tus roles y qué puedes ver
 src/lib/acciones.ts        Piezas comunes de las acciones del servidor
-src/lib/formulacion.ts     Consultas de la etapa 1
+src/lib/formulacion.ts     Consultas de la etapa 1: presupuestos, periodos y órdenes de compra
+src/lib/periodos.ts        Los tres periodos del año (sin base: lo usan también componentes de cliente)
 src/lib/catalogo.ts        Catálogo y precios de referencia
 src/lib/consultas.ts       Saldos de la ejecución, avisos y pendientes
 src/app/page.tsx           Inicio, distinto según el rol
-src/app/formulacion/       Presupuesto por departamento, sus acciones y la grilla de meses
+src/app/formulacion/       Presupuesto por departamento, por periodo, y sus acciones
 src/app/catalogo/          El catálogo tipo marketplace
-src/app/proyeccion/        Proyección mensual para GESEMCO y su exportación a CSV
-src/components/            Encabezado, avisos, pasos, ítems, campos, grilla de meses y gráficos
+src/app/ordenes-de-compra/ Las tres órdenes de compra del año para GESEMCO y su exportación a CSV
+src/components/            Encabezado, avisos, pasos, ítems, campos y gráficos
 ```
 
 ## Cuando cambie el modelo de datos
@@ -100,6 +106,8 @@ El archivo `.sql` es la fuente de verdad, no el ORM:
   `bigint` y `numeric` a `number`.
 - **El precio de una línea se congela al agregarla.** Si el catálogo cambia después, el
   presupuesto aprobado no se mueve.
+- **Dos revisiones, en orden.** Primero Dirección, después contabilidad. Los reparos de
+  contabilidad vuelven directo a ella: Dirección ya aprobó y no se le pide de nuevo.
 - **El login es provisorio.** El selector de usuario reemplaza la autenticación mientras
   construimos. Cuando entre Auth.js, se borra `src/app/actions.ts` y se cambia
   `getSesion()`; el resto del código no se entera.
@@ -112,7 +120,8 @@ El archivo `.sql` es la fuente de verdad, no el ORM:
 ## Lo que sigue
 
 1. Etapa 2: solicitud del profesor, bandeja del jefe, pendientes de Dirección, cola del
-   equipo de compra y tablero de contabilidad con exportación a Excel.
+   equipo de compra y tablero de contabilidad con exportación a Excel. La compra de cada
+   periodo es su orden más los extras aprobados hasta entonces.
 2. Scraper de precios (Dimeiggs, Lápiz López, Librería Nacional, LABdeCiencias) e
    histórico de referencia desde las órdenes públicas de Mercado Público.
 3. Autenticación real y avisos por correo.

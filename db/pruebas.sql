@@ -93,14 +93,43 @@ END $$;
 
 
 -- ---------------------------------------------------------------------
--- Etapa 1 · Formulación
+-- Etapa 1 · Formulación por periodos
 -- ---------------------------------------------------------------------
 
 DO $$
 DECLARE
-    v_mat    integer := pg_temp.pres('Matemática', 2027);
-    v_prog   integer;
-    v_monto  bigint;
+    v_arte  integer := pg_temp.pres('Arte', 2027);
+BEGIN
+    -- Todo programa va en uno de los tres periodos.
+    PERFORM pg_temp.debe_fallar(
+        format($q$INSERT INTO programa (presupuesto_id, nombre) VALUES (%s, 'Sin periodo')$q$, v_arte),
+        'periodo');
+    PERFORM pg_temp.debe_fallar(
+        format($q$INSERT INTO programa (presupuesto_id, periodo, nombre) VALUES (%s, 4, 'Periodo inventado')$q$, v_arte),
+        'programa_periodo_fkey');
+    PERFORM pg_temp.ok('todo programa va en uno de los tres periodos');
+
+    -- Un programa que sigue en otro periodo se vuelve a ingresar ahí, pero
+    -- no puede estar dos veces en el mismo periodo.
+    PERFORM pg_temp.debe_fallar(
+        format($q$INSERT INTO programa (presupuesto_id, periodo, nombre) VALUES (%s, 1, 'muestra de arte de fin de año')$q$, v_arte),
+        'uq_programa_nombre');
+    ASSERT (SELECT count(*) FROM programa WHERE presupuesto_id = v_arte AND nombre = 'Muestra de arte de fin de año') = 3;
+    PERFORM pg_temp.ok('un programa se repite en otro periodo, pero no dos veces en el mismo');
+
+    -- Lo que pide cada periodo: el ejemplo de Arte de las presentaciones.
+    ASSERT (SELECT monto FROM vw_proyeccion_periodo WHERE presupuesto_id = v_arte AND periodo = 1) = 107580;
+    ASSERT (SELECT monto FROM vw_proyeccion_periodo WHERE presupuesto_id = v_arte AND periodo = 2) = 29850;
+    ASSERT (SELECT monto FROM vw_proyeccion_periodo WHERE presupuesto_id = v_arte AND periodo = 3) = 359950;
+    ASSERT (SELECT formulado FROM vw_presupuesto_departamento WHERE presupuesto_id = v_arte) = 497380;
+    PERFORM pg_temp.ok('lo que pide cada periodo suma el total del presupuesto');
+END $$;
+
+
+DO $$
+DECLARE
+    v_mat   integer := pg_temp.pres('Matemática', 2027);
+    v_prog  integer;
 BEGIN
     SELECT id INTO v_prog FROM programa WHERE presupuesto_id = v_mat AND nombre = 'Olimpiada de matemática';
 
@@ -129,29 +158,86 @@ BEGIN
         'ck_devuelto_con_comentario');
     PERFORM pg_temp.ok('Dirección no devuelve sin comentario');
 
-    -- No se salta estados.
+    -- No se salta a nadie.
     PERFORM pg_temp.debe_fallar(
-        format($q$UPDATE presupuesto_departamento SET estado = 'aprobado' WHERE id = %s$q$,
-               pg_temp.pres('Arte', 2027)),
-        'no puede pasar de borrador a aprobado');
-    PERFORM pg_temp.ok('no se aprueba un borrador sin enviarlo');
+        format($q$UPDATE presupuesto_departamento SET estado = 'aprobado' WHERE id = %s$q$, pg_temp.pres('Arte', 2027)),
+        'está en preparación y no puede quedar aprobado');
+    PERFORM pg_temp.debe_fallar(
+        format($q$UPDATE presupuesto_departamento SET estado = 'aprobado' WHERE id = %s$q$, v_mat),
+        'está en revisión de Dirección y no puede quedar aprobado');
+    PERFORM pg_temp.ok('nada se aprueba sin pasar por Dirección y por contabilidad');
 
     -- No se envía vacío.
     PERFORM pg_temp.debe_fallar(
-        format($q$UPDATE presupuesto_departamento SET estado = 'enviado' WHERE id = %s$q$,
-               pg_temp.pres('Formación', 2027)),
-        'sin líneas');
-    PERFORM pg_temp.ok('no se envía un presupuesto sin líneas');
+        format($q$UPDATE presupuesto_departamento SET estado = 'enviado' WHERE id = %s$q$, pg_temp.pres('Formación', 2027)),
+        'sin ítems');
+    PERFORM pg_temp.ok('no se envía un presupuesto sin ítems');
 
-    -- Aprobar congela la suma de las líneas.
+    -- Dirección aprueba: pasa a contabilidad, todavía sin monto congelado.
+    UPDATE presupuesto_departamento SET estado = 'revision_contabilidad' WHERE id = v_mat;
+    ASSERT (SELECT monto_aprobado FROM presupuesto_departamento WHERE id = v_mat) IS NULL,
+        'el monto se congela recién cuando aprueba contabilidad';
+    ASSERT (SELECT resuelto_direccion_por FROM presupuesto_departamento WHERE id = v_mat) = 2,
+        'queda registrado quién aprobó en Dirección';
+    ASSERT EXISTS (SELECT 1 FROM notificacion WHERE usuario_id = 1 AND titulo LIKE '%Matemática listo para revisar');
+    ASSERT EXISTS (SELECT 1 FROM notificacion WHERE usuario_id = 5 AND titulo LIKE 'Dirección aprobó%Matemática');
+    PERFORM pg_temp.ok('Dirección aprueba y el presupuesto pasa a contabilidad, con aviso a contabilidad y al jefe');
+
+    PERFORM pg_temp.debe_fallar(
+        format($q$UPDATE linea_presupuesto SET cantidad = 99 WHERE programa_id = %s$q$, v_prog),
+        'en revisión de contabilidad');
+    PERFORM pg_temp.debe_fallar(
+        format($q$UPDATE presupuesto_departamento SET estado = 'borrador' WHERE id = %s$q$, v_mat),
+        'está en revisión de contabilidad y no puede quedar en preparación');
+    PERFORM pg_temp.ok('mientras lo revisa contabilidad no se edita ni se retira');
+END $$;
+
+
+DO $$
+DECLARE
+    v_mat    integer := pg_temp.pres('Matemática', 2027);
+    v_prog   integer;
+    v_monto  bigint;
+BEGIN
+    SELECT id INTO v_prog FROM programa WHERE presupuesto_id = v_mat AND nombre = 'Olimpiada de matemática';
+    PERFORM set_config('app.usuario_id', '1', true);
+
+    -- Los reparos exigen decir qué corregir, y le llegan al jefe.
+    PERFORM pg_temp.debe_fallar(
+        format($q$UPDATE presupuesto_departamento SET estado = 'con_reparos' WHERE id = %s$q$, v_mat),
+        'ck_reparos_con_comentario');
+    UPDATE presupuesto_departamento
+       SET estado = 'con_reparos', comentario_contabilidad = 'Los premios van por otra cuenta: sácalos del presupuesto.'
+     WHERE id = v_mat;
+    ASSERT EXISTS (SELECT 1 FROM notificacion
+                    WHERE usuario_id = 5 AND mensaje = 'Los premios van por otra cuenta: sácalos del presupuesto.');
+    PERFORM pg_temp.ok('contabilidad envía reparos con un comentario que le llega al jefe');
+
+    -- Con reparos, el jefe corrige y lo reenvía directo a contabilidad.
+    PERFORM set_config('app.usuario_id', '5', true);
+    DELETE FROM linea_presupuesto WHERE programa_id = v_prog AND descripcion = 'Premios olimpiada';
+    PERFORM pg_temp.debe_fallar(
+        format($q$UPDATE presupuesto_departamento SET estado = 'enviado' WHERE id = %s$q$, v_mat),
+        'con reparos de contabilidad y no puede quedar en revisión de Dirección');
+    UPDATE presupuesto_departamento SET estado = 'revision_contabilidad' WHERE id = v_mat;
+    ASSERT (SELECT resuelto_direccion_por FROM presupuesto_departamento WHERE id = v_mat) = 2,
+        'la aprobación de Dirección se mantiene';
+    ASSERT (SELECT en_contabilidad_desde FROM vw_presupuesto_departamento WHERE presupuesto_id = v_mat)
+           = (SELECT enviado_en FROM presupuesto_departamento WHERE id = v_mat);
+    ASSERT EXISTS (SELECT 1 FROM notificacion WHERE usuario_id = 1 AND titulo LIKE 'Matemática corrigió los reparos%');
+    PERFORM pg_temp.ok('con reparos el jefe corrige y lo reenvía directo a contabilidad, sin pasar por Dirección');
+
+    -- Contabilidad aprueba: se congela la suma de las líneas.
+    PERFORM set_config('app.usuario_id', '1', true);
     SELECT formulado INTO v_monto FROM vw_presupuesto_departamento WHERE presupuesto_id = v_mat;
     UPDATE presupuesto_departamento SET estado = 'aprobado' WHERE id = v_mat;
     ASSERT (SELECT monto_aprobado FROM presupuesto_departamento WHERE id = v_mat) = v_monto,
         'el monto aprobado debe ser la suma de las líneas';
-    ASSERT (SELECT resuelto_por FROM presupuesto_departamento WHERE id = v_mat) = 2,
-        'la aprobación registra quién aprobó';
+    ASSERT (SELECT resuelto_contabilidad_por FROM presupuesto_departamento WHERE id = v_mat) = 1,
+        'queda registrado quién aprobó en contabilidad';
     ASSERT (SELECT vigente FROM vw_presupuesto_departamento WHERE presupuesto_id = v_mat) = v_monto;
-    PERFORM pg_temp.ok('aprobar congela el monto y registra quién aprobó');
+    ASSERT EXISTS (SELECT 1 FROM notificacion WHERE usuario_id = 5 AND titulo LIKE 'Contabilidad aprobó%Matemática');
+    PERFORM pg_temp.ok('contabilidad aprueba: congela el monto, registra quién y avisa al jefe');
 
     PERFORM pg_temp.debe_fallar(
         format($q$UPDATE linea_presupuesto SET cantidad = 99 WHERE programa_id = %s$q$, v_prog),
@@ -160,52 +246,35 @@ BEGIN
         format($q$UPDATE presupuesto_departamento SET monto_aprobado = 1 WHERE id = %s$q$, v_mat),
         'modificación presupuestaria');
     PERFORM pg_temp.debe_fallar(
-        format($q$UPDATE presupuesto_departamento SET estado = 'borrador' WHERE id = %s$q$, v_mat),
-        'no puede pasar de aprobado a borrador');
+        format($q$UPDATE presupuesto_departamento SET estado = 'con_reparos', comentario_contabilidad = 'Tarde' WHERE id = %s$q$, v_mat),
+        'está aprobado y no puede quedar con reparos');
     PERFORM pg_temp.ok('un presupuesto aprobado queda congelado');
 
-    ASSERT EXISTS (SELECT 1 FROM notificacion WHERE usuario_id = 5 AND titulo LIKE 'Dirección aprobó%Matemática');
-    PERFORM pg_temp.ok('el jefe recibe el aviso de aprobación');
+    -- Las órdenes de compra: solo lo aprobado, separado por periodo.
+    ASSERT NOT EXISTS (SELECT 1 FROM vw_orden_periodo WHERE presupuesto_id = pg_temp.pres('Arte', 2027)),
+        'un presupuesto sin aprobar no entra a las órdenes';
+    ASSERT (SELECT sum(subtotal) FROM vw_orden_periodo WHERE presupuesto_id = v_mat) = v_monto;
+    ASSERT NOT EXISTS (
+        SELECT 1 FROM vw_proyeccion_periodo pp
+         WHERE pp.presupuesto_id = v_mat
+           AND pp.monto <> (SELECT COALESCE(sum(o.subtotal), 0) FROM vw_orden_periodo o
+                             WHERE o.presupuesto_id = v_mat AND o.periodo = pp.periodo)),
+        'cada orden trae lo del periodo';
+    PERFORM pg_temp.ok('las órdenes de compra traen lo aprobado, separado por periodo');
 END $$;
 
 
 DO $$
 DECLARE
-    v_linea  integer;
-    v_arte   integer := pg_temp.pres('Arte', 2027);
+    v_his integer := pg_temp.pres('Historia', 2027);
 BEGIN
-    -- Tóner genérico de Reproducción: 12 unidades, 8 ya tienen mes.
-    SELECT l.id INTO v_linea
-      FROM linea_presupuesto l JOIN programa p ON p.id = l.programa_id
-     WHERE p.presupuesto_id = pg_temp.pres('Reproducción de imagen', 2027)
-       AND l.descripcion = 'Tóner fotocopiadora (genérico)';
-
-    INSERT INTO linea_calendario (linea_id, mes, cantidad) VALUES (v_linea, 10, 4);
-    ASSERT (SELECT cantidad_sin_mes FROM vw_calendarizacion_linea WHERE linea_id = v_linea) = 0;
-    PERFORM pg_temp.ok('los meses se asignan con el presupuesto ya aprobado');
-
+    -- Historia tiene reparos: si el jefe lo vacía, no lo puede reenviar.
+    PERFORM set_config('app.usuario_id', '7', true);
+    DELETE FROM programa WHERE presupuesto_id = v_his;
     PERFORM pg_temp.debe_fallar(
-        format($q$INSERT INTO linea_calendario (linea_id, mes, cantidad) VALUES (%s, 11, 1)$q$, v_linea),
-        'no caben');
-    PERFORM pg_temp.ok('los meses no suman más que la línea');
-
-    -- En borrador, bajar la cantidad bajo lo repartido reinicia el reparto.
-    SELECT l.id INTO v_linea
-      FROM linea_presupuesto l JOIN programa p ON p.id = l.programa_id
-     WHERE p.presupuesto_id = v_arte AND l.descripcion = 'Témpera frasco 250 ml';
-    INSERT INTO linea_calendario (linea_id, mes, cantidad) VALUES (v_linea, 4, 30), (v_linea, 10, 30);
-    UPDATE linea_presupuesto SET cantidad = 40 WHERE id = v_linea;
-    ASSERT NOT EXISTS (SELECT 1 FROM linea_calendario WHERE linea_id = v_linea);
-    PERFORM pg_temp.ok('bajar la cantidad bajo lo repartido reinicia los meses de esa línea');
-
-    -- Subir la cantidad no toca el reparto.
-    INSERT INTO linea_calendario (linea_id, mes, cantidad) VALUES (v_linea, 4, 40);
-    UPDATE linea_presupuesto SET cantidad = 50 WHERE id = v_linea;
-    ASSERT (SELECT cantidad_sin_mes FROM vw_calendarizacion_linea WHERE linea_id = v_linea) = 10;
-    PERFORM pg_temp.ok('subir la cantidad deja lo nuevo sin mes');
-
-    ASSERT (SELECT sum(monto) FROM vw_proyeccion_mensual WHERE departamento = 'Arte' AND mes = 4) = 40 * 1990;
-    PERFORM pg_temp.ok('la proyección mensual suma cantidad por precio de cada mes');
+        format($q$UPDATE presupuesto_departamento SET estado = 'revision_contabilidad' WHERE id = %s$q$, v_his),
+        'sin ítems');
+    PERFORM pg_temp.ok('tampoco se reenvía vacío a contabilidad');
 END $$;
 
 
@@ -400,7 +469,7 @@ BEGIN
     -- Cerrar 2026 lo deja inmutable.
     UPDATE anio_presupuestario SET etapa = 'cerrado', fecha_cierre = '2027-01-31' WHERE anio = 2026;
     PERFORM pg_temp.debe_fallar(
-        format($q$INSERT INTO programa (presupuesto_id, nombre) VALUES (%s, 'Tarde')$q$,
+        format($q$INSERT INTO programa (presupuesto_id, periodo, nombre) VALUES (%s, 1, 'Tarde')$q$,
                pg_temp.pres('Arte', 2026)),
         'está cerrado');
     PERFORM pg_temp.debe_fallar(

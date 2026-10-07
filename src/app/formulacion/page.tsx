@@ -5,8 +5,9 @@ import { EstadoPresupuestoPildora } from '@/components/pildoras';
 import { ResumenFormulacion } from '@/components/resumen-formulacion';
 import { IconoFlecha } from '@/components/iconos';
 import { boton, tarjeta, td, tdNum, th, tituloPagina } from '@/components/ui';
-import { esDireccion, getSesion, participaEnFormulacion } from '@/lib/sesion';
+import { esContabilidad, esDireccion, getSesion, participaEnFormulacion } from '@/lib/sesion';
 import { resumenFormulacion } from '@/lib/formulacion';
+import { esperaRevision, ultimaNovedad } from '@/lib/etapas';
 import { fecha, money } from '@/lib/formato';
 
 export default async function Formulacion() {
@@ -34,17 +35,19 @@ export default async function Formulacion() {
     );
   }
 
-  const anio = sesion.anioFormulacion.anio;
+  const { anio, formulacionHasta } = sesion.anioFormulacion;
   const filas = await resumenFormulacion(sesion.colegio.id, sesion.anioFormulacion.id);
   // Filas con un botón: el texto va centrado en altura, alineado con él.
   const celda = td.replace('align-top', 'align-middle');
   const celdaNum = tdNum.replace('align-top', 'align-middle');
-  const soyDireccion = esDireccion(sesion);
+  const roles = { direccion: esDireccion(sesion), contabilidad: esContabilidad(sesion) };
 
-  // Dirección ve primero lo que espera su revisión.
-  const orden = soyDireccion
-    ? [...filas.filter((f) => f.estado === 'enviado'), ...filas.filter((f) => f.estado !== 'enviado')]
-    : filas;
+  // Primero lo que espera la revisión de quien mira: Dirección, lo enviado;
+  // contabilidad, lo que Dirección ya aprobó o volvió con los reparos corregidos.
+  const orden = [
+    ...filas.filter((f) => esperaRevision(f, roles)),
+    ...filas.filter((f) => !esperaRevision(f, roles)),
+  ];
 
   return (
     <>
@@ -52,16 +55,19 @@ export default async function Formulacion() {
       <main className="mx-auto max-w-6xl px-5 pb-24 pt-8">
         <h1 className={tituloPagina}>Presupuestos {anio}</h1>
         <p className="mb-6 mt-2 max-w-3xl text-[17px] text-ink-2">
-          Cada jefe arma el presupuesto de su departamento y lo envía. Dirección lo conversa en una reunión y lo aprueba
-          o lo devuelve con un comentario. Con el presupuesto aprobado, el jefe indica los meses y GESEMCO recibe la
-          proyección mensual.
+          Cada jefe arma el presupuesto de su departamento en tres periodos y lo envía a Dirección, que lo conversa en
+          una reunión y lo aprueba o lo devuelve. Después lo revisa contabilidad: lo aprueba o envía reparos, y el jefe
+          se lo reenvía corregido directo a ella. Con los aprobados se arman las órdenes de compra de cada periodo.
+          {formulacionHasta && ` La formulación cierra el ${fecha(formulacionHasta)}.`}
         </p>
 
         <ResumenFormulacion filas={filas} />
 
         <div className={`${tarjeta} mt-6 overflow-hidden`}>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[860px] border-collapse">
+          {/* relative: el texto oculto de la última columna (sr-only, absoluto) queda
+              dentro del scroll y no ensancha la página en el celular. */}
+          <div className="relative overflow-x-auto">
+            <table className="w-full min-w-[900px] border-collapse">
               <thead>
                 <tr className="bg-surface-2">
                   <th className={th}>Departamento</th>
@@ -75,7 +81,7 @@ export default async function Formulacion() {
               </thead>
               <tbody>
                 {orden.map((f) => {
-                  const revisar = soyDireccion && f.estado === 'enviado';
+                  const revisar = esperaRevision(f, roles);
                   return (
                     <tr key={f.departamentoId} className={revisar ? 'bg-accent-soft/50' : 'hover:bg-surface-2'}>
                       <td className={`${celda} font-semibold`}>{f.departamento}</td>
@@ -83,13 +89,7 @@ export default async function Formulacion() {
                       <td className={celdaNum}>{f.lineas}</td>
                       <td className={celdaNum}>{f.estado ? money(f.formulado) : '—'}</td>
                       <td className={celdaNum}>{f.montoAprobado !== null ? money(f.montoAprobado) : '—'}</td>
-                      <td className={`${celda} text-ink-2`}>
-                        {f.estado === 'enviado' && `Enviado el ${fecha(f.enviadoEn)}`}
-                        {(f.estado === 'aprobado' || f.estado === 'devuelto') &&
-                          `${f.estado === 'aprobado' ? 'Aprobado' : 'Devuelto'} el ${fecha(f.resueltoEn)}`}
-                        {f.estado === 'borrador' && 'En preparación'}
-                        {f.estado === null && 'Todavía no empieza'}
-                      </td>
+                      <td className={`${celda} text-ink-2`}>{ultimaNovedad(f)}</td>
                       <td className={`${celda} text-right`}>
                         <Link href={`/formulacion/${f.departamentoId}`}
                           aria-label={`${revisar ? 'Revisar' : 'Ver'} el presupuesto de ${f.departamento}`}

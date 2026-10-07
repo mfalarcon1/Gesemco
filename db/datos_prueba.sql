@@ -1,8 +1,8 @@
 -- =====================================================================
 --  GESEMCO · Datos de prueba
 --
---  El Colegio Santa Úrsula en septiembre de 2026: ejecutando el
---  presupuesto 2026 y formulando el 2027.
+--  El Colegio Santa Úrsula en octubre de 2026: ejecutando el
+--  presupuesto 2026 y formulando el 2027 por periodos.
 --
 --  Los precios de tiendas reales son los que esas tiendas publicaban el
 --  24-09-2026. Los de la tienda "Precio de ejemplo" son ilustrativos.
@@ -23,9 +23,10 @@ BEGIN;
 INSERT INTO colegio (nombre, rbd, comuna)
 VALUES ('Colegio Santa Úrsula', '00000-0', NULL);   -- RBD y comuna: completar con los reales
 
-INSERT INTO anio_presupuestario (colegio_id, anio, etapa, fecha_apertura) VALUES
-    (1, 2026, 'ejecucion',   '2025-10-01'),   -- 1
-    (1, 2027, 'formulacion', '2026-09-01');   -- 2
+-- La formulación va de comienzos de septiembre a fines de noviembre del año anterior.
+INSERT INTO anio_presupuestario (colegio_id, anio, etapa, fecha_apertura, formulacion_hasta) VALUES
+    (1, 2026, 'ejecucion',   '2025-09-01', '2025-11-30'),   -- 1
+    (1, 2027, 'formulacion', '2026-09-01', '2026-11-30');   -- 2
 
 INSERT INTO departamento (colegio_id, nombre, centro_costo) VALUES
     (1, 'Formación',               'CC-FOR'),   --  1
@@ -278,11 +279,26 @@ CREATE FUNCTION pg_temp.presupuesto(p_depto text, p_anio integer) RETURNS intege
     RETURNING id;
 $$ LANGUAGE sql;
 
-CREATE FUNCTION pg_temp.programa(p_presupuesto integer, p_nombre text, p_descripcion text) RETURNS integer AS $$
-    INSERT INTO programa (presupuesto_id, nombre, descripcion, creado_por)
-    VALUES (p_presupuesto, p_nombre, p_descripcion, fn_usuario_actual())
+CREATE FUNCTION pg_temp.programa(p_presupuesto integer, p_periodo integer, p_nombre text, p_descripcion text)
+RETURNS integer AS $$
+    INSERT INTO programa (presupuesto_id, periodo, nombre, descripcion, creado_por)
+    VALUES (p_presupuesto, p_periodo, p_nombre, p_descripcion, fn_usuario_actual())
     RETURNING id;
 $$ LANGUAGE sql;
+
+-- El camino completo de un presupuesto: el jefe lo envía, Dirección lo
+-- aprueba y, si se pide, contabilidad también.
+CREATE FUNCTION pg_temp.aprobar(p_presupuesto integer, p_tambien_contabilidad boolean) RETURNS void AS $$
+BEGIN
+    UPDATE presupuesto_departamento SET estado = 'enviado' WHERE id = p_presupuesto;
+    PERFORM set_config('app.usuario_id', '2', true);   -- Andrés Bulnes, Dirección
+    UPDATE presupuesto_departamento SET estado = 'revision_contabilidad' WHERE id = p_presupuesto;
+    IF p_tambien_contabilidad THEN
+        PERFORM set_config('app.usuario_id', '1', true);   -- Marcela Ovalle, contabilidad
+        UPDATE presupuesto_departamento SET estado = 'aprobado' WHERE id = p_presupuesto;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
 
 -- Línea desde el catálogo, al precio de referencia (mediana de ofertas).
 CREATE FUNCTION pg_temp.linea(p_programa integer, p_articulo text, p_cantidad integer) RETURNS integer AS $$
@@ -317,13 +333,6 @@ CREATE FUNCTION pg_temp.linea_libre(
     SELECT p_programa, p_descripcion, p_cantidad, p_precio, cc.id, p_origen
       FROM cuenta_contable cc WHERE cc.codigo = p_cuenta
     RETURNING id;
-$$ LANGUAGE sql;
-
--- Reparte una línea en meses: '{"3": 4, "4": 4}'.
-CREATE FUNCTION pg_temp.meses(p_linea integer, p_reparto jsonb) RETURNS void AS $$
-    INSERT INTO linea_calendario (linea_id, mes, cantidad)
-    SELECT p_linea, key::smallint, value::integer
-      FROM jsonb_each_text(p_reparto);
 $$ LANGUAGE sql;
 
 -- Orden de compra: se crea en borrador, se cargan los ítems y se emite.
@@ -388,8 +397,9 @@ $$ LANGUAGE plpgsql;
 -- 2026 · en ejecución
 --
 -- El 2026 no se formuló en el sistema: cada departamento carga su monto
--- aprobado como una sola línea y Dirección lo aprueba. Desde ahí se
--- ejecuta contra el total del departamento, que es como se controla.
+-- aprobado como una sola línea, y Dirección y contabilidad lo aprueban.
+-- Desde ahí se ejecuta contra el total del departamento, que es como se
+-- controla. La carga va en el periodo 1: ese año no se armó por periodos.
 -- ---------------------------------------------------------------------
 
 DO $$
@@ -411,13 +421,10 @@ BEGIN
     LOOP
         PERFORM set_config('app.usuario_id', '1', true);   -- contabilidad carga
         v_presupuesto := pg_temp.presupuesto(r.departamento, 2026);
-        v_programa := pg_temp.programa(v_presupuesto, 'Presupuesto 2026 (carga inicial)',
+        v_programa := pg_temp.programa(v_presupuesto, 1, 'Presupuesto 2026 (carga inicial)',
             'Monto aprobado en la planilla 2026, cargado de una vez para ejecutar contra él.');
         PERFORM pg_temp.linea_libre(v_programa, 'Monto aprobado 2026', 1, r.monto, '5-1-01', 'Planilla 2026');
-
-        UPDATE presupuesto_departamento SET estado = 'enviado' WHERE id = v_presupuesto;
-        PERFORM set_config('app.usuario_id', '2', true);   -- Dirección aprueba
-        UPDATE presupuesto_departamento SET estado = 'aprobado' WHERE id = v_presupuesto;
+        PERFORM pg_temp.aprobar(v_presupuesto, true);
     END LOOP;
 END $$;
 
@@ -528,54 +535,73 @@ UPDATE pendiente_pedido p
 
 
 -- ---------------------------------------------------------------------
--- 2027 · en formulación
+-- 2027 · en formulación, por periodos
+--
+--   Arte                     en preparación (el ejemplo de las presentaciones)
+--   Matemática               en revisión de Dirección
+--   Ciencia                  devuelto por Dirección
+--   Historia                 con reparos de contabilidad
+--   Reproducción de imagen   en revisión de contabilidad
+--   Biblioteca y Alemán      aprobados: ya forman las órdenes de compra
+--   Formación                recién empezando, con un programa vacío
 -- ---------------------------------------------------------------------
 
 DO $$
 DECLARE
     v_pres   integer;
     v_prog   integer;
-    v_linea  integer;
+    v_p      integer;
 BEGIN
+    -- Arte: en preparación. Es el ejemplo de las presentaciones ($497.380).
+    -- La muestra sigue en los tres periodos y el día del arte en el 1 y el
+    -- 3: cada uno se vuelve a ingresar en el periodo, con lo de ese periodo.
+    PERFORM set_config('app.usuario_id', '13', true);
+    v_pres := pg_temp.presupuesto('Arte', 2027);
+    v_prog := pg_temp.programa(v_pres, 1, 'Muestra de arte de fin de año',
+        'Trabajos de 5° básico a IV medio que se exponen en noviembre.');
+    PERFORM pg_temp.linea(v_prog, 'Témpera frasco 250 ml', 30);
+    v_prog := pg_temp.programa(v_pres, 1, 'Día del arte', 'Jornada abierta a las familias en septiembre.');
+    PERFORM pg_temp.linea(v_prog, 'Témpera frasco 500 ml', 12);
+    v_prog := pg_temp.programa(v_pres, 2, 'Muestra de arte de fin de año', NULL);
+    PERFORM pg_temp.linea(v_prog, 'Témpera frasco 250 ml', 15);
+    v_prog := pg_temp.programa(v_pres, 3, 'Muestra de arte de fin de año', NULL);
+    PERFORM pg_temp.linea(v_prog, 'Témpera frasco 250 ml', 5);
+    PERFORM pg_temp.linea_libre(v_prog, 'Montaje de la muestra', 1, 180000, '5-2-01', 'Estimación de la jefa');
+    v_prog := pg_temp.programa(v_pres, 3, 'Día del arte', NULL);
+    PERFORM pg_temp.linea_libre(v_prog, 'Arriendo de toldos', 2, 85000, '5-2-01', 'Cotización de 2026');
+
     -- Matemática: enviado, esperando a Dirección.
     PERFORM set_config('app.usuario_id', '5', true);
     v_pres := pg_temp.presupuesto('Matemática', 2027);
-    v_prog := pg_temp.programa(v_pres, 'Olimpiada de matemática',
+    v_prog := pg_temp.programa(v_pres, 1, 'Material concreto 1° ciclo',
+        'Material manipulable para 1° a 4° básico.');
+    PERFORM pg_temp.linea(v_prog, 'Material concreto base 10', 8);
+    PERFORM pg_temp.linea(v_prog, 'Ábaco horizontal de madera 10 filas', 10);
+    v_prog := pg_temp.programa(v_pres, 2, 'Olimpiada de matemática',
         'Preparación y participación en la olimpiada regional y nacional.');
     PERFORM pg_temp.linea(v_prog, 'Calculadora científica', 10);
     PERFORM pg_temp.linea(v_prog, 'Resma papel carta 75 g', 10);
     PERFORM pg_temp.linea(v_prog, 'Plumón de pizarra (caja 4)', 12);
     PERFORM pg_temp.linea_libre(v_prog, 'Inscripción Olimpiada Nacional de Matemática', 1, 120000,
         '5-2-01', 'Valor de la inscripción 2026');
-    v_prog := pg_temp.programa(v_pres, 'Material concreto 1° ciclo',
-        'Material manipulable para 1° a 4° básico.');
-    PERFORM pg_temp.linea(v_prog, 'Material concreto base 10', 8);
-    PERFORM pg_temp.linea(v_prog, 'Ábaco horizontal de madera 10 filas', 10);
     UPDATE presupuesto_departamento SET estado = 'enviado' WHERE id = v_pres;
-
-    -- Arte: todavía en borrador.
-    PERFORM set_config('app.usuario_id', '13', true);
-    v_pres := pg_temp.presupuesto('Arte', 2027);
-    v_prog := pg_temp.programa(v_pres, 'Muestra de arte de fin de año',
-        'Exposición de trabajos de 5° básico a IV medio en noviembre.');
-    PERFORM pg_temp.linea(v_prog, 'Témpera frasco 250 ml', 60);
-    PERFORM pg_temp.linea(v_prog, 'Témpera estuche 12 colores', 40);
-    PERFORM pg_temp.linea(v_prog, 'Block de dibujo medium 99 1/8', 80);
-    PERFORM pg_temp.linea(v_prog, 'Set de pinceles escolares', 30);
-    PERFORM pg_temp.linea_libre(v_prog, 'Montaje y marcos para la muestra', 1, 250000,
-        '5-2-01', 'Estimación del jefe');
 
     -- Ciencia: enviado y devuelto por Dirección.
     PERFORM set_config('app.usuario_id', '14', true);
     v_pres := pg_temp.presupuesto('Ciencia', 2027);
-    v_prog := pg_temp.programa(v_pres, 'Laboratorio 1° y 2° medio',
-        'Reactivos e insumos para las prácticas del año.');
-    PERFORM pg_temp.linea(v_prog, 'Acetona anhidra pura', 6);
-    PERFORM pg_temp.linea(v_prog, 'Ácido clorhídrico', 6);
-    PERFORM pg_temp.linea(v_prog, 'Agar nutritivo', 4);
-    PERFORM pg_temp.linea(v_prog, 'Guantes de nitrilo (caja 100)', 10);
-    PERFORM pg_temp.linea(v_prog, 'Tubos de ensayo (caja 12)', 20);
+    v_prog := pg_temp.programa(v_pres, 1, 'Laboratorio 1° y 2° medio',
+        'Reactivos e insumos para las prácticas del primer periodo.');
+    PERFORM pg_temp.linea(v_prog, 'Acetona anhidra pura', 3);
+    PERFORM pg_temp.linea(v_prog, 'Ácido clorhídrico', 3);
+    PERFORM pg_temp.linea(v_prog, 'Guantes de nitrilo (caja 100)', 5);
     PERFORM pg_temp.linea(v_prog, 'Agitador magnético', 2);
+    v_prog := pg_temp.programa(v_pres, 2, 'Laboratorio 1° y 2° medio',
+        'Reactivos e insumos para las prácticas del segundo periodo.');
+    PERFORM pg_temp.linea(v_prog, 'Acetona anhidra pura', 3);
+    PERFORM pg_temp.linea(v_prog, 'Ácido clorhídrico', 3);
+    PERFORM pg_temp.linea(v_prog, 'Agar nutritivo', 4);
+    PERFORM pg_temp.linea(v_prog, 'Guantes de nitrilo (caja 100)', 5);
+    PERFORM pg_temp.linea(v_prog, 'Tubos de ensayo (caja 12)', 20);
     UPDATE presupuesto_departamento SET estado = 'enviado' WHERE id = v_pres;
     PERFORM set_config('app.usuario_id', '2', true);
     UPDATE presupuesto_departamento
@@ -583,40 +609,67 @@ BEGIN
            comentario_direccion = 'Como lo conversamos: dejen un solo agitador magnético y revisen la cantidad de guantes.'
      WHERE id = v_pres;
 
-    -- Reproducción de imagen: aprobado, con los meses casi completos.
+    -- Historia: Dirección lo aprobó y contabilidad envió reparos.
+    PERFORM set_config('app.usuario_id', '7', true);
+    v_pres := pg_temp.presupuesto('Historia', 2027);
+    v_prog := pg_temp.programa(v_pres, 1, 'Material para las clases',
+        'Mapas para las salas de 7° y 8° básico.');
+    PERFORM pg_temp.linea(v_prog, 'Mapa mural de Chile', 6);
+    v_prog := pg_temp.programa(v_pres, 2, 'Salida pedagógica',
+        'Visita al Museo Histórico Nacional con los segundos medios.');
+    PERFORM pg_temp.linea_libre(v_prog, 'Arriendo de buses', 2, 550000, '5-2-01', 'Estimación del jefe');
+    PERFORM pg_temp.aprobar(v_pres, false);
+    PERFORM set_config('app.usuario_id', '1', true);
+    UPDATE presupuesto_departamento
+       SET estado = 'con_reparos',
+           comentario_contabilidad = 'El arriendo de buses está sobre la cotización vigente del proveedor: $950.000 por los dos. Ajústalo a ese monto.'
+     WHERE id = v_pres;
+
+    -- Reproducción de imagen: aprobado por Dirección, en revisión de
+    -- contabilidad. La operación de fotocopiado sigue todo el año, así que
+    -- está en los tres periodos.
     PERFORM set_config('app.usuario_id', '11', true);
     v_pres := pg_temp.presupuesto('Reproducción de imagen', 2027);
-    v_prog := pg_temp.programa(v_pres, 'Operación anual de fotocopiado',
-        'Papel y tóner para las guías y evaluaciones de todo el colegio.');
-    v_linea := pg_temp.linea(v_prog, 'Papel fotocopia carta (caja 10 resmas)', 40);
-    PERFORM pg_temp.meses(v_linea, '{"3":4,"4":4,"5":4,"6":4,"7":4,"8":4,"9":4,"10":4,"11":4,"12":4}');
-    v_linea := pg_temp.linea(v_prog, 'Tóner fotocopiadora (genérico)', 12);
-    PERFORM pg_temp.meses(v_linea, '{"3":2,"4":1,"5":1,"6":1,"7":1,"8":1,"9":1}');
-    v_linea := pg_temp.linea(v_prog, 'Tóner Brother TN-1060', 4);
-    PERFORM pg_temp.meses(v_linea, '{"3":1,"6":1,"9":1,"11":1}');
-    UPDATE presupuesto_departamento SET estado = 'enviado' WHERE id = v_pres;
-    PERFORM set_config('app.usuario_id', '2', true);
-    UPDATE presupuesto_departamento SET estado = 'aprobado' WHERE id = v_pres;
+    FOR v_p IN 1..3 LOOP
+        v_prog := pg_temp.programa(v_pres, v_p, 'Operación de fotocopiado',
+            'Papel y tóner para las guías y evaluaciones de todo el colegio.');
+        PERFORM pg_temp.linea(v_prog, 'Papel fotocopia carta (caja 10 resmas)', CASE v_p WHEN 3 THEN 16 ELSE 12 END);
+        PERFORM pg_temp.linea(v_prog, 'Tóner fotocopiadora (genérico)', 4);
+        PERFORM pg_temp.linea(v_prog, 'Tóner Brother TN-1060', CASE v_p WHEN 3 THEN 2 ELSE 1 END);
+    END LOOP;
+    PERFORM pg_temp.aprobar(v_pres, false);
 
-    -- Biblioteca: aprobado, sin meses asignados todavía.
+    -- Biblioteca: aprobado por Dirección y por contabilidad.
     PERFORM set_config('app.usuario_id', '10', true);
     v_pres := pg_temp.presupuesto('Biblioteca', 2027);
-    v_prog := pg_temp.programa(v_pres, 'Plan lector 2027',
+    v_prog := pg_temp.programa(v_pres, 1, 'Plan lector 2027',
         'Títulos del plan lector y diccionarios para la sala de estudio.');
-    PERFORM pg_temp.linea(v_prog, 'Libro de lectura complementaria', 60);
+    PERFORM pg_temp.linea(v_prog, 'Libro de lectura complementaria', 40);
     PERFORM pg_temp.linea(v_prog, 'Diccionario inglés-español escolar', 10);
     PERFORM pg_temp.linea(v_prog, 'Diccionario alemán-español escolar', 6);
-    v_prog := pg_temp.programa(v_pres, 'Club de lectura', 'Encuentros mensuales con autores invitados.');
+    v_prog := pg_temp.programa(v_pres, 2, 'Club de lectura', 'Encuentro con un autor invitado.');
     PERFORM pg_temp.linea_libre(v_prog, 'Visita de autor invitado', 1, 180000, '5-2-01', 'Cotización del autor');
-    UPDATE presupuesto_departamento SET estado = 'enviado' WHERE id = v_pres;
-    PERFORM set_config('app.usuario_id', '2', true);
-    UPDATE presupuesto_departamento SET estado = 'aprobado' WHERE id = v_pres;
+    v_prog := pg_temp.programa(v_pres, 3, 'Plan lector 2027', 'Títulos del segundo semestre.');
+    PERFORM pg_temp.linea(v_prog, 'Libro de lectura complementaria', 20);
+    PERFORM pg_temp.aprobar(v_pres, true);
 
-    -- Formación: recién empezando, con un programa sin líneas.
+    -- Alemán: aprobado por Dirección y por contabilidad.
+    PERFORM set_config('app.usuario_id', '12', true);
+    v_pres := pg_temp.presupuesto('Alemán', 2027);
+    v_prog := pg_temp.programa(v_pres, 1, 'Material para las clases',
+        'Diccionarios y cuadernos para 7° básico.');
+    PERFORM pg_temp.linea(v_prog, 'Diccionario alemán-español escolar', 12);
+    PERFORM pg_temp.linea(v_prog, 'Cuaderno college 80 hojas', 30);
+    v_prog := pg_temp.programa(v_pres, 3, 'Semana alemana', 'Feria con comida y música en octubre.');
+    PERFORM pg_temp.linea(v_prog, 'Cartulina de color (pliego)', 40);
+    PERFORM pg_temp.linea_libre(v_prog, 'Insumos para la feria', 1, 150000, '5-2-01', 'Estimación de la jefa');
+    PERFORM pg_temp.aprobar(v_pres, true);
+
+    -- Formación: recién empezando, con un programa sin ítems.
     PERFORM set_config('app.usuario_id', '4', true);
     v_pres := pg_temp.presupuesto('Formación', 2027);
-    PERFORM pg_temp.programa(v_pres, 'Jornadas de convivencia',
-        'Dos jornadas por curso durante el año.');
+    PERFORM pg_temp.programa(v_pres, 1, 'Jornadas de convivencia',
+        'Una jornada por curso en el primer periodo.');
 END $$;
 
 COMMIT;
