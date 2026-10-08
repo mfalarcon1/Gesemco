@@ -20,6 +20,28 @@ dos etapas:
 
 **Estado:** las dos etapas funcionan completas.
 
+## La demo en línea (rama `demo`)
+
+Esta rama es la que se publica para que el cliente pruebe: la app en Vercel y la base en
+Neon. Lo único que la distingue de `main` es una clave para entrar (`src/proxy.ts`), que se
+activa solo si existe la variable `DEMO_CLAVE`. Adentro siguen el selector de "Modo de
+prueba" y los datos inventados. El desarrollo de la versión final va en `main`.
+
+Variables en Vercel: `DATABASE_URL` (la URL de Neon con pooling, la que dice `-pooler`) y
+`DEMO_CLAVE`. En Vercel la rama de producción es `demo` y el *Ignored Build Step* salta las
+demás ramas, así que lo que subas a `main` no se publica.
+
+Cargar o reiniciar la base de la demo (borra lo que hayan probado):
+
+```powershell
+$env:DATABASE_URL="postgresql://...neon.tech/neondb?sslmode=require"   # la URL directa, sin -pooler
+node scripts/db.mjs reset --forzar   # sin npm: PowerShell a veces se come el "--"
+Remove-Item Env:DATABASE_URL    # para que lo siguiente vuelva a usar tu base local
+```
+
+Llevar a la demo un arreglo hecho en `main`: `git switch demo`, `git cherry-pick <commit>`
+y `git push`. Cuando quieras mostrar la versión nueva completa: `git merge main`.
+
 ## Requisitos
 
 - **Node.js 20.12 o superior**: `node --version` en PowerShell. Si no lo tienes o es más
