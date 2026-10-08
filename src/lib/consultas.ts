@@ -1,8 +1,5 @@
 import { and, asc, desc, eq, inArray, type SQL } from 'drizzle-orm';
-import {
-  db, vwSaldoDepartamento, notificacion, pendientePedido, ordenCompra,
-  presupuestoDepartamento, departamento,
-} from '@/db';
+import { db, vwSaldoDepartamento, notificacion } from '@/db';
 
 /**
  * SUM() sobre bigint devuelve numeric, y drizzle-kit tipa numeric como
@@ -18,6 +15,7 @@ export const num = (v: string | number | null | undefined): number =>
 export type SaldoDepartamento = {
   departamentoId: number;
   departamento: string;
+  centroCosto: string | null;
   aprobado: number;
   modificaciones: number;
   vigente: number;
@@ -49,6 +47,7 @@ export async function saldosEjecucion(
   return filas.map((f) => ({
     departamentoId: f.departamentoId ?? 0,
     departamento: f.departamento ?? '',
+    centroCosto: f.centroCosto,
     aprobado: num(f.aprobado),
     modificaciones: num(f.modificaciones),
     vigente: num(f.vigente),
@@ -62,7 +61,7 @@ export async function saldosEjecucion(
   }));
 }
 
-export type Totales = Omit<SaldoDepartamento, 'departamentoId' | 'departamento'>;
+export type Totales = Omit<SaldoDepartamento, 'departamentoId' | 'departamento' | 'centroCosto'>;
 
 export function totalizar(filas: SaldoDepartamento[]): Totales {
   const cero: Totales = {
@@ -90,26 +89,4 @@ export async function notificacionesRecientes(usuarioId: number, limite = 6) {
     .where(eq(notificacion.usuarioId, usuarioId))
     .orderBy(desc(notificacion.creadaEn), desc(notificacion.id))
     .limit(limite);
-}
-
-/** Órdenes que no cupieron y esperan a Dirección. */
-export async function pendientesDeDireccion(colegioId: number) {
-  const filas = await db
-    .select({
-      id: pendientePedido.id,
-      folio: ordenCompra.folio,
-      departamento: departamento.nombre,
-      monto: ordenCompra.montoPresupuesto,
-      excedido: pendientePedido.montoExcedido,
-      creadoEn: pendientePedido.creadoEn,
-      observacion: ordenCompra.observacion,
-    })
-    .from(pendientePedido)
-    .innerJoin(ordenCompra, eq(ordenCompra.id, pendientePedido.ordenId))
-    .innerJoin(presupuestoDepartamento, eq(presupuestoDepartamento.id, ordenCompra.presupuestoId))
-    .innerJoin(departamento, eq(departamento.id, presupuestoDepartamento.departamentoId))
-    .where(and(eq(pendientePedido.estado, 'pendiente'), eq(departamento.colegioId, colegioId)))
-    .orderBy(asc(pendientePedido.creadoEn));
-
-  return filas.map((f) => ({ ...f, monto: num(f.monto), excedido: num(f.excedido) }));
 }

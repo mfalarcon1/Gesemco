@@ -11,7 +11,6 @@ const ETIQUETA: Record<string, string> = {
   contabilidad: 'contabilidad',
   equipo_compra: 'equipo de compra',
   jefe_departamento: 'jefe',
-  profesor: 'profesor',
 };
 
 function detalle(u: Opcion) {

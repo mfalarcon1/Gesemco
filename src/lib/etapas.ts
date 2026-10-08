@@ -17,7 +17,7 @@ export function pasosDe(r: ResumenPresupuesto): Paso[] {
       titulo: 'Armar el presupuesto',
       detalle: e === 'devuelto' ? 'Ahora: ajustar lo que pidió Dirección'
         : e === 'con_reparos' ? 'Ahora: corregir los reparos de contabilidad'
-          : 'Ahora: los programas de cada periodo',
+          : 'Ahora: programas, ítems y sus meses',
       estado: 'actual',
     };
 
@@ -49,7 +49,10 @@ export function pasosDe(r: ResumenPresupuesto): Paso[] {
 export function ultimaNovedad(r: ResumenPresupuesto): string {
   switch (r.estado) {
     case null: return 'Todavía no empieza';
-    case 'borrador': return 'En preparación';
+    case 'borrador':
+      return r.lineasSinMes > 0
+        ? `En preparación · ${r.lineasSinMes === 1 ? 'a 1 ítem le faltan' : `a ${r.lineasSinMes} ítems les faltan`} meses`
+        : 'En preparación';
     case 'enviado':
       return `${r.comentarioDireccion ? 'Reenviado' : 'Enviado'} a Dirección el ${fecha(r.enviadoEn)}`;
     case 'devuelto': return `Devuelto por Dirección el ${fecha(r.resueltoDireccionEn)}`;

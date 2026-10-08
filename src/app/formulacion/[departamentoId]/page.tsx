@@ -5,23 +5,23 @@ import { Aviso, leerAviso } from '@/components/aviso';
 import { EstadoPresupuestoPildora } from '@/components/pildoras';
 import { Pasos } from '@/components/pasos';
 import { BotonConConfirmacion } from '@/components/confirmar';
+import { ColumnasMensuales } from '@/components/columnas-mensuales';
 import { ItemPresupuesto } from '@/components/item-presupuesto';
 import { ItemAMano } from '@/components/item-a-mano';
 import { NuevoPrograma } from '@/components/nuevo-programa';
 import { COLUMNAS_ITEM, type ModoItem } from '@/components/columnas-item';
 import {
-  IconoAlerta, IconoBuscar, IconoFlecha, IconoOk, IconoReloj, IconoVolver,
+  IconoAlerta, IconoBuscar, IconoCalendario, IconoFlecha, IconoOk, IconoReloj, IconoVolver,
 } from '@/components/iconos';
 import { ayuda, boton, campo, tarjeta, titulo, tituloPagina } from '@/components/ui';
 import {
-  esContabilidad, esDireccion, esJefeDe, getSesion, participaEnFormulacion, veOrdenesDeCompra,
+  esContabilidad, esDireccion, esJefeDe, getSesion, participaEnFormulacion, veProyeccion,
 } from '@/lib/sesion';
 import {
-  cuentasContables, esEditable, programasConLineas, resumenDepartamento, sumarPorPeriodo,
-  type PorPeriodo, type ProgramaConLineas, type ResumenPresupuesto,
+  cuentasContables, esEditable, mesesDePresupuesto, programasConLineas, resumenDepartamento,
+  type Mes, type ProgramaConLineas, type ResumenPresupuesto,
 } from '@/lib/formulacion';
-import { PERIODOS, type Periodo } from '@/lib/periodos';
-import { fecha, money, plural } from '@/lib/formato';
+import { fecha, MESES, money, plural } from '@/lib/formato';
 import { pasosDe } from '@/lib/etapas';
 import {
   aprobarContabilidad, aprobarDireccion, devolverPresupuesto, eliminarPrograma, enviarADireccion,
@@ -63,9 +63,10 @@ export default async function PresupuestoDepartamento({ params, searchParams }: 
   const resumen = await resumenDepartamento(departamentoId, sesion.anioFormulacion.id);
   if (!resumen) notFound();
 
-  const [programas, cuentas] = await Promise.all([
+  const [programas, cuentas, meses] = await Promise.all([
     resumen.presupuestoId ? programasConLineas(resumen.presupuestoId) : Promise.resolve([]),
     cuentasContables(),
+    resumen.presupuestoId ? mesesDePresupuesto(resumen.presupuestoId) : Promise.resolve(null),
   ]);
 
   const soyJefe = esJefeDe(sesion, departamentoId);
@@ -74,8 +75,8 @@ export default async function PresupuestoDepartamento({ params, searchParams }: 
   const anio = sesion.anioFormulacion.anio;
 
   const lineas = programas.flatMap((p) => p.lineas);
-  const porPeriodo = sumarPorPeriodo(programas);
   const modo: ModoItem = editable ? 'editable' : 'lectura';
+  const enlaceMeses = `/formulacion/${departamentoId}/meses`;
 
   return (
     <>
@@ -89,10 +90,10 @@ export default async function PresupuestoDepartamento({ params, searchParams }: 
         )}
 
         <div className="mb-6 flex flex-wrap items-end gap-x-6 gap-y-3">
-          <div className="min-w-0 flex-1">
+          <div className="min-w-[16rem] flex-1">
             <p className="text-[15px] font-medium text-ink-2">
               Presupuesto {anio}
-              {resumen.estado !== 'aprobado' && resumen.formulacionHasta && ` · la formulación cierra el ${fecha(resumen.formulacionHasta)}`}
+              {resumen.estado !== 'aprobado' && <Plazos resumen={resumen} />}
             </p>
             <div className="flex flex-wrap items-center gap-3">
               <h1 className={tituloPagina}>{resumen.departamento}</h1>
@@ -111,17 +112,26 @@ export default async function PresupuestoDepartamento({ params, searchParams }: 
 
         <div className="mt-6">
           <QueHacer resumen={resumen} soyJefe={soyJefe} soyDireccion={esDireccion(sesion)}
-            soyContabilidad={esContabilidad(sesion)} verOrdenes={veOrdenesDeCompra(sesion)} lineas={lineas.length} />
+            soyContabilidad={esContabilidad(sesion)} verProyeccion={veProyeccion(sesion)} />
         </div>
 
-        <section id="programas" className="mt-10">
-          <div className="mb-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-            <h2 className={titulo}>Programas de cada periodo</h2>
-            {programas.length > 0 && (
-              <p className={ayuda}>
-                {plural(programas.length, 'programa', 'programas')} · {plural(lineas.length, 'ítem', 'ítems')}
-                {resumen.fueraCatalogo > 0 && ` · ${money(resumen.fueraCatalogo)} fuera del catálogo`}
-              </p>
+        <section id="programas" className="mt-10 scroll-mt-28">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+            <div>
+              <h2 className={titulo}>Programas</h2>
+              {programas.length > 0 && (
+                <p className={ayuda}>
+                  {plural(programas.length, 'programa', 'programas')} · {plural(lineas.length, 'ítem', 'ítems')}
+                  {resumen.fueraCatalogo > 0 && ` · ${money(resumen.fueraCatalogo)} fuera del catálogo`}
+                </p>
+              )}
+            </div>
+            {lineas.length > 0 && (
+              <Link href={enlaceMeses}
+                className={editable && resumen.lineasSinMes > 0 ? boton.primario : boton.secundario}>
+                <IconoCalendario className="size-5" />
+                {editable ? (resumen.lineasSinMes > 0 ? 'Indicar los meses' : 'Revisar los meses') : 'Ver los meses en una grilla'}
+              </Link>
             )}
           </div>
 
@@ -132,50 +142,60 @@ export default async function PresupuestoDepartamento({ params, searchParams }: 
               <p className={`${tarjeta} px-6 py-10 text-center text-ink-2`}>El departamento todavía no crea programas.</p>
             )
           ) : (
-            <>
-              <ResumenPeriodos porPeriodo={porPeriodo} programas={programas} />
-              <div className="mt-10 flex flex-col gap-12">
-                {PERIODOS.map((p) => (
-                  <SeccionPeriodo key={p.numero} periodo={p} total={porPeriodo[p.numero - 1]}
-                    programas={programas.filter((x) => x.periodo === p.numero)}
-                    sugerencias={sugerenciasPara(p.numero, programas)}
-                    departamentoId={departamentoId} modo={modo} editable={editable}
-                    mostrarCuenta={sesion.veTodoElColegio} cuentas={cuentas} />
-                ))}
-              </div>
-            </>
+            <div className="flex flex-col gap-6">
+              {programas.map((p) => (
+                <TarjetaPrograma key={p.id} programa={p} departamentoId={departamentoId} modo={modo}
+                  editable={editable} mostrarCuenta={sesion.veTodoElColegio} cuentas={cuentas} />
+              ))}
+              {/* Las keys salen de los datos: cuando una acción sale bien los datos cambian y el
+                  formulario se cierra; si sale mal, sigue abierto con lo que se escribió. */}
+              {editable && <NuevoPrograma key={`nuevo-${programas.length}`} departamentoId={departamentoId} />}
+            </div>
           )}
         </section>
+
+        {meses && lineas.length > 0 && (
+          <MesAMes meses={meses} resumen={resumen} anio={anio} />
+        )}
       </main>
     </>
   );
 }
 
-/** Programas que el departamento ya tiene en otros periodos y todavía no en este. */
-function sugerenciasPara(periodo: number, programas: ProgramaConLineas[]): string[] {
-  const aca = new Set(programas.filter((p) => p.periodo === periodo).map((p) => p.nombre.toLowerCase()));
-  const vistas = new Set<string>();
-  const nombres: string[] = [];
-  for (const p of programas) {
-    const clave = p.nombre.toLowerCase();
-    if (p.periodo === periodo || aca.has(clave) || vistas.has(clave)) continue;
-    vistas.add(clave);
-    nombres.push(p.nombre);
-  }
-  return nombres;
+/** Hasta cuándo se arma y hasta cuándo se aprueba: informativo. */
+function Plazos({ resumen: r }: { resumen: ResumenPresupuesto }) {
+  const armando = r.estado === null || r.estado === 'borrador' || r.estado === 'devuelto';
+  if (armando && r.formulacionHasta) return <> · se arma hasta el {fecha(r.formulacionHasta)}</>;
+  if (r.aprobacionHasta) return <> · se aprueba hasta el {fecha(r.aprobacionHasta)}</>;
+  return null;
 }
 
 // ---------------------------------------------------------------------
 // En qué va el presupuesto y qué hay que hacer ahora
 // ---------------------------------------------------------------------
 
+/**
+ * Con ítems sin meses no se puede enviar (la base lo exige): en vez del
+ * botón de envío, la acción que toca es indicar los meses.
+ */
+function FaltanMeses({ resumen: r }: { resumen: ResumenPresupuesto }) {
+  return (
+    <Link href={`/formulacion/${r.departamentoId}/meses`} className={boton.primario}>
+      <IconoCalendario className="size-5" />Indicar los meses
+    </Link>
+  );
+}
+
 function QueHacer({
-  resumen: r, soyJefe, soyDireccion, soyContabilidad, verOrdenes, lineas,
+  resumen: r, soyJefe, soyDireccion, soyContabilidad, verProyeccion,
 }: {
-  resumen: ResumenPresupuesto; soyJefe: boolean; soyDireccion: boolean; soyContabilidad: boolean;
-  verOrdenes: boolean; lineas: number;
+  resumen: ResumenPresupuesto; soyJefe: boolean; soyDireccion: boolean; soyContabilidad: boolean; verProyeccion: boolean;
 }) {
   const oculto = <input type="hidden" name="departamentoId" value={r.departamentoId} />;
+  const sinMes = r.lineasSinMes > 0;
+  const avisoMeses = sinMes
+    ? ` Antes de enviarlo, indica los meses: ${r.lineasSinMes === 1 ? 'a 1 ítem le faltan' : `a ${r.lineasSinMes} ítems les faltan`}.`
+    : '';
 
   if (r.estado === 'enviado' && soyDireccion) return <DecisionDireccion resumen={r} />;
   if (r.estado === 'revision_contabilidad' && soyContabilidad) return <DecisionContabilidad resumen={r} />;
@@ -185,13 +205,15 @@ function QueHacer({
       <Comentario
         titulo={`${soyJefe ? 'Dirección te devolvió el presupuesto' : 'Dirección devolvió el presupuesto'} el ${fecha(r.resueltoDireccionEn)}`}
         comentario={r.comentarioDireccion}
-        explicacion={soyJefe ? 'Ajusta lo que te pidió en los programas de abajo y vuelve a enviarlo a Dirección.' : 'El jefe lo está ajustando.'}
-        accion={soyJefe && (
+        explicacion={soyJefe
+          ? `Ajusta lo que te pidió en los programas de abajo y vuelve a enviarlo a Dirección.${avisoMeses}`
+          : 'El jefe lo está ajustando.'}
+        accion={soyJefe && (sinMes ? <FaltanMeses resumen={r} /> : (
           <form action={enviarADireccion}>
             {oculto}
             <button className={boton.primario}>Enviar de nuevo a Dirección</button>
           </form>
-        )}
+        ))}
       />
     );
   }
@@ -202,14 +224,14 @@ function QueHacer({
         titulo={`${soyJefe ? 'Contabilidad te envió reparos' : 'Contabilidad envió reparos'} el ${fecha(r.resueltoContabilidadEn)}`}
         comentario={r.comentarioContabilidad}
         explicacion={soyJefe
-          ? 'Corrige lo que te pidió en los programas de abajo. Cuando lo reenvíes, vuelve directo a contabilidad, sin pasar otra vez por Dirección.'
+          ? `Corrige lo que te pidió en los programas de abajo. Cuando lo reenvíes, vuelve directo a contabilidad, sin pasar otra vez por Dirección.${avisoMeses}`
           : 'El jefe lo está corrigiendo. Cuando lo reenvíe, vuelve directo a contabilidad.'}
-        accion={soyJefe && (
+        accion={soyJefe && (sinMes ? <FaltanMeses resumen={r} /> : (
           <form action={reenviarAContabilidad}>
             {oculto}
-            <button className={boton.primario} disabled={lineas === 0}>Enviar de nuevo a contabilidad</button>
+            <button className={boton.primario} disabled={r.lineas === 0}>Enviar de nuevo a contabilidad</button>
           </form>
-        )}
+        ))}
       />
     );
   }
@@ -253,13 +275,14 @@ function QueHacer({
             Aprobado por contabilidad el {fecha(r.resueltoContabilidadEn)} por {money(r.montoAprobado)}
           </p>
           <p className="mt-1 text-ink-2">
-            {r.modificaciones !== 0 && `Vigente: ${money(r.vigente)}, con modificaciones. `}
-            Quedó fijo, y sus ítems entran a las órdenes de compra de cada periodo.
+            {r.modificaciones !== 0 && `Vigente: ${money(r.vigente)}, con extensiones de Dirección. `}
+            Quedó fijo, y sus meses entran a la proyección mensual de GESEMCO.
+            {soyJefe && ` Durante ${r.anio} pedirás lo que necesites desde aquí, con la fecha en que lo necesitas.`}
           </p>
         </div>
-        {verOrdenes && (
-          <Link href="/ordenes-de-compra" className={boton.secundario}>
-            Ver las órdenes de compra<IconoFlecha className="size-4" />
+        {verProyeccion && (
+          <Link href="/proyeccion" className={boton.secundario}>
+            Ver la proyección mensual<IconoFlecha className="size-4" />
           </Link>
         )}
       </section>
@@ -276,21 +299,37 @@ function QueHacer({
   }
   if (r.estado === null) return null; // La bienvenida de abajo explica cómo empezar.
 
+  if (r.lineas > 0 && sinMes) {
+    return (
+      <div className="flex flex-wrap items-center gap-4 rounded-2xl border border-line bg-surface px-6 py-5">
+        <IconoCalendario className="size-6 shrink-0 text-accent" />
+        <div className="min-w-[15rem] flex-1">
+          <p className="text-lg font-semibold text-ink">Indica en qué meses usarás cada ítem</p>
+          <p className="mt-1 text-ink-2">
+            Así contabilidad sabe cuánto dinero necesitarás cada mes. {r.lineasSinMes === 1 ? 'A 1 ítem le faltan' : `A ${r.lineasSinMes} ítems les faltan`} meses;
+            cuando todos los tengan, podrás enviar tu presupuesto a Dirección.
+          </p>
+        </div>
+        <FaltanMeses resumen={r} />
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-wrap items-center gap-4 rounded-2xl border border-line bg-surface px-6 py-5">
       <div className="min-w-[15rem] flex-1">
         <p className="text-lg font-semibold text-ink">
-          {lineas === 0 ? 'Agrega lo que necesitas a tus programas' : '¿Terminaste? Envía tu presupuesto a Dirección'}
+          {r.lineas === 0 ? 'Agrega lo que necesitas a tus programas' : '¿Terminaste? Envía tu presupuesto a Dirección'}
         </p>
         <p className="mt-1 text-ink-2">
-          {lineas === 0
-            ? 'Cuando tengas al menos un ítem, podrás enviarlo a Dirección.'
-            : 'Dirección lo revisa contigo en una reunión y después lo revisa contabilidad. Mientras Dirección lo revisa no podrás editarlo, pero puedes retirar el envío si necesitas corregir algo.'}
+          {r.lineas === 0
+            ? 'Cuando tengas ítems con sus meses, podrás enviarlo a Dirección.'
+            : 'Todos tus ítems tienen sus meses. Dirección lo revisa contigo en una reunión y después lo revisa contabilidad. Mientras Dirección lo revisa no podrás editarlo, pero puedes retirar el envío si necesitas corregir algo.'}
         </p>
       </div>
       <form action={enviarADireccion}>
         {oculto}
-        <button className={boton.primario} disabled={lineas === 0}>Enviar a Dirección</button>
+        <button className={boton.primario} disabled={r.lineas === 0}>Enviar a Dirección</button>
       </form>
     </div>
   );
@@ -339,7 +378,7 @@ function DecisionDireccion({ resumen: r }: { resumen: ResumenPresupuesto }) {
       <h2 id="decision" className={titulo}>Tu decisión</h2>
       <p className={`${ayuda} mt-1`}>
         {r.comentarioDireccion ? `El jefe lo reenvió el ${fecha(r.enviadoEn)} con los ajustes.` : `Enviado el ${fecha(r.enviadoEn)}.`}
-        {' '}Revisa los programas de cada periodo más abajo; lo que conversen en la reunión con el jefe se resuelve aquí.
+        {' '}Revisa los programas y sus meses más abajo; lo que conversen en la reunión con el jefe se resuelve aquí.
       </p>
       {r.comentarioDireccion && (
         <div className="mt-3 rounded-xl bg-surface-2 px-4 py-3">
@@ -392,7 +431,7 @@ function DecisionContabilidad({ resumen: r }: { resumen: ResumenPresupuesto }) {
         {r.comentarioContabilidad
           ? `El jefe lo reenvió el ${fecha(r.enviadoEn)} con los reparos corregidos (Dirección lo había aprobado el ${fecha(r.resueltoDireccionEn)}).`
           : `Dirección lo aprobó el ${fecha(r.resueltoDireccionEn)}.`}
-        {' '}Revisa los programas de cada periodo más abajo.
+        {' '}Revisa los programas, sus ítems y el dinero de cada mes más abajo.
       </p>
       {/* El comentario de contabilidad se conserva al reenviar: sirve para revisar que se corrigió. */}
       {r.comentarioContabilidad && (
@@ -406,8 +445,8 @@ function DecisionContabilidad({ resumen: r }: { resumen: ResumenPresupuesto }) {
           {oculto}
           <h3 className="flex items-center gap-2 text-lg font-semibold"><IconoOk className="size-5 text-ok" />Aprobar</h3>
           <p className="text-ink-2">
-            El presupuesto queda fijo en {money(r.formulado)} y sus ítems entran a las órdenes de compra de cada periodo.
-            Después ya no se puede cambiar.
+            El presupuesto queda fijo en {money(r.formulado)} y sus meses entran a la proyección mensual. Después ya no se
+            puede cambiar.
           </p>
           <div className="mt-auto pt-2">
             <BotonConConfirmacion
@@ -438,14 +477,14 @@ function DecisionContabilidad({ resumen: r }: { resumen: ResumenPresupuesto }) {
 }
 
 // ---------------------------------------------------------------------
-// Periodos, programas e ítems
+// Programas, ítems y el dinero de cada mes
 // ---------------------------------------------------------------------
 
 function Bienvenida({ departamentoId, anio }: { departamentoId: number; anio: number }) {
   const pasos = [
-    { titulo: 'Elige un periodo y crea un programa', texto: 'El año tiene tres periodos: marzo a mayo, junio a agosto y septiembre a diciembre.' },
-    { titulo: 'Agrégale lo que necesitará', texto: 'Búscalo en el catálogo, con precios de tiendas, o agrégalo a mano. Si el programa sigue en otro periodo, créalo también allá.' },
-    { titulo: 'Envíalo a Dirección', texto: 'Lo revisan contigo en una reunión y después lo aprueba contabilidad.' },
+    { titulo: 'Crea un programa', texto: 'Cada cosa que el departamento hará el próximo año: una salida, una olimpiada, el material de las clases.' },
+    { titulo: 'Agrégale lo que necesita', texto: 'Búscalo en el catálogo, con precios de tiendas, o agrégalo a mano.' },
+    { titulo: 'Indica los meses y envíalo', texto: 'En qué meses usarás cada ítem. Después lo revisan Dirección y contabilidad.' },
   ];
   return (
     <section className={`${tarjeta} p-6 md:p-8`}>
@@ -468,71 +507,6 @@ function Bienvenida({ departamentoId, anio }: { departamentoId: number; anio: nu
   );
 }
 
-/** Cuánto va en cada periodo, con un enlace a su sección. */
-function ResumenPeriodos({ porPeriodo, programas }: { porPeriodo: PorPeriodo; programas: ProgramaConLineas[] }) {
-  return (
-    <ul className="grid gap-3 md:grid-cols-3" aria-label="Total de cada periodo">
-      {PERIODOS.map((p) => {
-        const propios = programas.filter((x) => x.periodo === p.numero);
-        const items = propios.reduce((s, x) => s + x.lineas.length, 0);
-        return (
-          <li key={p.numero}>
-            <a href={`#periodo-${p.numero}`}
-              className={`${tarjeta} flex h-full flex-col gap-1 px-5 py-4 transition-colors hover:border-accent hover:bg-accent-soft/40`}>
-              <span className="text-[15px] font-semibold text-ink">{p.nombre} <span className="font-normal text-ink-2">· {p.meses}</span></span>
-              <span className="tabular text-2xl font-semibold tracking-tight">{money(porPeriodo[p.numero - 1])}</span>
-              <span className="text-sm text-ink-2">
-                {propios.length === 0 ? 'Sin programas' : `${plural(propios.length, 'programa', 'programas')} · ${plural(items, 'ítem', 'ítems')}`}
-              </span>
-            </a>
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
-function SeccionPeriodo({
-  periodo: p, total, programas, sugerencias, departamentoId, modo, editable, mostrarCuenta, cuentas,
-}: {
-  periodo: Periodo; total: number; programas: ProgramaConLineas[]; sugerencias: string[];
-  departamentoId: number; modo: ModoItem; editable: boolean; mostrarCuenta: boolean; cuentas: Cuenta[];
-}) {
-  const id = `periodo-${p.numero}`;
-  return (
-    <section id={id} aria-labelledby={`${id}-titulo`} className="scroll-mt-28">
-      <div className="mb-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b-2 border-accent/30 pb-2">
-        <h3 id={`${id}-titulo`} className="font-display text-[22px] font-bold">
-          {p.nombre} <span className="font-sans text-lg font-medium text-ink-2">· {p.meses}</span>
-        </h3>
-        <p className="tabular text-lg font-semibold">{money(total)}</p>
-      </div>
-
-      {programas.length === 0 ? (
-        <p className="rounded-2xl border border-dashed border-line-strong px-6 py-5 text-ink-2">
-          {editable ? 'Todavía no hay programas en este periodo.' : 'Sin programas en este periodo.'}
-        </p>
-      ) : (
-        <div className="flex flex-col gap-6">
-          {programas.map((x) => (
-            <TarjetaPrograma key={x.id} programa={x} departamentoId={departamentoId} modo={modo}
-              editable={editable} mostrarCuenta={mostrarCuenta} cuentas={cuentas} />
-          ))}
-        </div>
-      )}
-
-      {/* Las keys salen de los datos: cuando una acción sale bien los datos cambian y el
-          formulario se cierra; si sale mal, sigue abierto con lo que se escribió. */}
-      {editable && (
-        <div className="mt-4">
-          <NuevoPrograma key={`nuevo-${p.numero}-${programas.length}`} departamentoId={departamentoId}
-            periodo={p.numero} sugerencias={sugerencias} />
-        </div>
-      )}
-    </section>
-  );
-}
-
 function TarjetaPrograma({
   programa: p, departamentoId, modo, editable, mostrarCuenta, cuentas,
 }: {
@@ -543,7 +517,7 @@ function TarjetaPrograma({
     <article id={`programa-${p.id}`} className={`${tarjeta} scroll-mt-28 overflow-hidden`}>
       <header className="flex flex-wrap items-start gap-4 px-6 py-5">
         <div className="min-w-0 flex-1">
-          <h4 className="font-display text-xl font-semibold">{p.nombre}</h4>
+          <h3 className="font-display text-xl font-semibold">{p.nombre}</h3>
           {p.descripcion && <p className="mt-1 text-ink-2">{p.descripcion}</p>}
         </div>
         <div className="text-right">
@@ -554,12 +528,12 @@ function TarjetaPrograma({
 
       {p.lineas.length === 0 ? (
         <p className="border-t border-line px-6 py-6 text-ink-2">
-          {editable ? 'Este programa todavía está vacío. Agrégale lo que necesitará en este periodo con los botones de abajo.' : 'Este programa no tiene ítems.'}
+          {editable ? 'Este programa todavía está vacío. Agrégale lo que necesitará con los botones de abajo.' : 'Este programa no tiene ítems.'}
         </p>
       ) : (
         <>
           <div aria-hidden className={`hidden gap-x-4 border-y border-line bg-surface-2 px-6 py-2.5 text-[13px] font-semibold text-ink-2 md:grid ${COLUMNAS_ITEM[modo]}`}>
-            <span>Ítem</span>
+            <span>Ítem y sus meses</span>
             <span className="text-right">Cantidad</span>
             <span className="text-right">Precio c/u</span>
             <span className="text-right">Total</span>
@@ -586,8 +560,8 @@ function TarjetaPrograma({
             <BotonConConfirmacion
               texto="Eliminar programa"
               pregunta={p.lineas.length > 0
-                ? `¿Eliminar "${p.nombre}" de este periodo y ${p.lineas.length === 1 ? 'su ítem' : `sus ${p.lineas.length} ítems`}?`
-                : `¿Eliminar "${p.nombre}" de este periodo?`}
+                ? `¿Eliminar "${p.nombre}" y ${p.lineas.length === 1 ? 'su ítem' : `sus ${p.lineas.length} ítems`}?`
+                : `¿Eliminar "${p.nombre}"?`}
               confirmar="Sí, eliminar"
               clase={`${boton.chico} text-ink-2 hover:bg-bad-soft hover:text-bad`}
               claseConfirmar={boton.peligro}
@@ -596,5 +570,52 @@ function TarjetaPrograma({
         </footer>
       )}
     </article>
+  );
+}
+
+/** El dinero que necesitará el departamento cada mes, según los meses de sus ítems. */
+function MesAMes({ meses, resumen: r, anio }: { meses: Mes[]; resumen: ResumenPresupuesto; anio: number }) {
+  const planificado = meses.map((m) => m.planificado);
+  const hayMeses = planificado.some((m) => m > 0);
+
+  return (
+    <section aria-labelledby="mes-a-mes" className={`${tarjeta} mt-10 p-6`}>
+      <div className="mb-4 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h2 id="mes-a-mes" className={titulo}>Dinero de cada mes, {anio}</h2>
+        {r.montoSinMes > 0 && hayMeses && (
+          <p className="flex items-center gap-1.5 text-[15px] text-warn">
+            <IconoAlerta className="size-4" />Todavía hay {money(r.montoSinMes)} sin mes.
+          </p>
+        )}
+      </div>
+      {hayMeses ? (
+        <>
+          <ColumnasMensuales meses={planificado} descripcion={`Dinero que necesita ${r.departamento} cada mes de ${anio}`} />
+          <details className="mt-4">
+            <summary className="cursor-pointer text-[15px] font-medium text-accent">Ver los montos en una tabla</summary>
+            <table className="mt-3 w-full max-w-md border-collapse">
+              <tbody>
+                {planificado.map((m, i) => (
+                  <tr key={MESES[i]}>
+                    <td className="border-b border-line py-2 capitalize">{MESES[i]}</td>
+                    <td className="tabular border-b border-line py-2 text-right">{money(m)}</td>
+                  </tr>
+                ))}
+                {r.montoSinMes > 0 && (
+                  <tr>
+                    <td className="py-2 text-ink-2">Sin mes todavía</td>
+                    <td className="tabular py-2 text-right text-ink-2">{money(r.montoSinMes)}</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </details>
+        </>
+      ) : (
+        <p className="rounded-xl bg-surface-2 px-5 py-6 text-center text-ink-2">
+          Cuando se indiquen los meses de los ítems, aquí aparecerá cuánto dinero se necesita cada mes.
+        </p>
+      )}
+    </section>
   );
 }

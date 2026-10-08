@@ -4,24 +4,26 @@ import { db, usuario, rolAsignado, departamento, anioPresupuestario, colegio } f
 
 export const COOKIE_USUARIO = 'gesemco_usuario';
 
-export type Rol =
-  | 'administrador' | 'direccion' | 'contabilidad'
-  | 'equipo_compra' | 'jefe_departamento' | 'profesor';
+export type Rol = 'administrador' | 'direccion' | 'contabilidad' | 'equipo_compra' | 'jefe_departamento';
 
 export type Departamento = { id: number; nombre: string };
-/** formulacionHasta: hasta cuándo se formula ese año (solo informativo). */
-export type Anio = { id: number; anio: number; formulacionHasta: string | null };
+/**
+ * formulacionHasta y aprobacionHasta: hasta cuándo se arma el presupuesto
+ * de ese año (octubre del anterior) y hasta cuándo se aprueba (noviembre).
+ * Solo informativos.
+ */
+export type Anio = { id: number; anio: number; formulacionHasta: string | null; aprobacionHasta: string | null };
 
 export type Sesion = {
   usuario: { id: number; nombre: string; email: string; colegioId: number };
-  colegio: { id: number; nombre: string };
-  /** El rol de mayor alcance: define la etiqueta y la portada. */
-  rol: Rol;
+  /** anticipacionDias: con cuántos días de anticipación se pide (una semana). */
+  colegio: { id: number; nombre: string; anticipacionDias: number };
+  /** El rol de mayor alcance: define la etiqueta y la portada. Null si no tiene ninguno vigente. */
+  rol: Rol | null;
   etiquetaRol: string;
-  /** Todos los roles vigentes. Un jefe puede además hacer clases en otro departamento. */
+  /** Todos los roles vigentes. */
   roles: Rol[];
   jefeDe: Departamento | null;
-  profesorEn: Departamento[];
   /** Dirección, contabilidad, equipo de compra y administrador ven el colegio completo. */
   veTodoElColegio: boolean;
   /** El año que se está formulando (etapa 1) y el que se está ejecutando (etapa 2). */
@@ -29,9 +31,7 @@ export type Sesion = {
   anioEjecucion: Anio | null;
 };
 
-const PRECEDENCIA: Rol[] = [
-  'administrador', 'direccion', 'contabilidad', 'equipo_compra', 'jefe_departamento', 'profesor',
-];
+const PRECEDENCIA: Rol[] = ['administrador', 'direccion', 'contabilidad', 'equipo_compra', 'jefe_departamento'];
 
 const DE_COLEGIO: Rol[] = ['administrador', 'direccion', 'contabilidad', 'equipo_compra'];
 
@@ -41,7 +41,6 @@ export const ETIQUETA_ROL: Record<Rol, string> = {
   contabilidad: 'Contabilidad GESEMCO',
   equipo_compra: 'Equipo de compra',
   jefe_departamento: 'Jefatura de departamento',
-  profesor: 'Profesor',
 };
 
 // La fecha la pone la base: un servidor que lleva días corriendo no
@@ -103,7 +102,7 @@ export async function getSesion(): Promise<Sesion | null> {
   if (!quien) return null;
 
   const [establecimiento] = await db
-    .select({ id: colegio.id, nombre: colegio.nombre })
+    .select({ id: colegio.id, nombre: colegio.nombre, anticipacionDias: colegio.anticipacionDias })
     .from(colegio)
     .where(eq(colegio.id, quien.colegioId));
 
@@ -116,10 +115,8 @@ export async function getSesion(): Promise<Sesion | null> {
     .where(and(eq(rolAsignado.usuarioId, quien.id), vigente));
 
   const roles = [...new Set(asignaciones.map((a) => a.rol))];
-  const rol = PRECEDENCIA.find((r) => roles.includes(r)) ?? 'profesor';
-
+  const rol = PRECEDENCIA.find((r) => roles.includes(r)) ?? null;
   const jefatura = asignaciones.find((a) => a.rol === 'jefe_departamento' && a.departamentoId);
-  const clases = asignaciones.filter((a) => a.rol === 'profesor' && a.departamentoId);
 
   const anios = await db
     .select({
@@ -127,6 +124,7 @@ export async function getSesion(): Promise<Sesion | null> {
       anio: anioPresupuestario.anio,
       etapa: anioPresupuestario.etapa,
       formulacionHasta: anioPresupuestario.formulacionHasta,
+      aprobacionHasta: anioPresupuestario.aprobacionHasta,
     })
     .from(anioPresupuestario)
     .where(and(
@@ -137,17 +135,16 @@ export async function getSesion(): Promise<Sesion | null> {
 
   const buscarAnio = (etapa: 'formulacion' | 'ejecucion'): Anio | null => {
     const a = anios.find((x) => x.etapa === etapa);
-    return a ? { id: a.id, anio: a.anio, formulacionHasta: a.formulacionHasta } : null;
+    return a ? { id: a.id, anio: a.anio, formulacionHasta: a.formulacionHasta, aprobacionHasta: a.aprobacionHasta } : null;
   };
 
   return {
     usuario: quien,
     colegio: establecimiento,
     rol,
-    etiquetaRol: ETIQUETA_ROL[rol],
+    etiquetaRol: rol ? ETIQUETA_ROL[rol] : 'Sin rol asignado',
     roles,
     jefeDe: jefatura ? { id: jefatura.departamentoId!, nombre: jefatura.departamento! } : null,
-    profesorEn: clases.map((c) => ({ id: c.departamentoId!, nombre: c.departamento! })),
     veTodoElColegio: roles.some((r) => DE_COLEGIO.includes(r)),
     anioFormulacion: buscarAnio('formulacion'),
     anioEjecucion: buscarAnio('ejecucion'),
@@ -165,17 +162,25 @@ const tiene = (s: Sesion, ...roles: Rol[]) => s.roles.some((r) => roles.includes
 export const esAdministrador = (s: Sesion) => tiene(s, 'administrador');
 export const esDireccion = (s: Sesion) => tiene(s, 'direccion', 'administrador');
 export const esContabilidad = (s: Sesion) => tiene(s, 'contabilidad', 'administrador');
+export const esEquipoCompra = (s: Sesion) => tiene(s, 'equipo_compra', 'administrador');
 
-/** Formula el presupuesto del departamento: solo su jefe. */
+/** Formula el presupuesto del departamento y hace sus pedidos: solo su jefe. */
 export const esJefeDe = (s: Sesion, departamentoId: number) =>
   s.jefeDe?.id === departamentoId || esAdministrador(s);
-
-export const puedeVerDepartamento = (s: Sesion, departamentoId: number) =>
-  s.veTodoElColegio || s.jefeDe?.id === departamentoId || s.profesorEn.some((d) => d.id === departamentoId);
 
 /** La etapa 1 la viven los jefes, Dirección y contabilidad. */
 export const participaEnFormulacion = (s: Sesion) =>
   s.jefeDe !== null || tiene(s, 'direccion', 'contabilidad', 'administrador');
 
-/** Las órdenes de compra de cada periodo son para GESEMCO y Dirección. */
-export const veOrdenesDeCompra = (s: Sesion) => tiene(s, 'direccion', 'contabilidad', 'administrador');
+/** La proyección mensual (lo aprobado, mes a mes) es para GESEMCO y Dirección. */
+export const veProyeccion = (s: Sesion) => tiene(s, 'direccion', 'contabilidad', 'administrador');
+
+/** La ejecución del colegio completo: Dirección y contabilidad. */
+export const veEjecucionColegio = (s: Sesion) => tiene(s, 'direccion', 'contabilidad', 'administrador');
+
+/** Los pedidos y el saldo de un departamento: su jefe, Dirección y contabilidad. */
+export const veEjecucionDe = (s: Sesion, departamentoId: number) =>
+  s.jefeDe?.id === departamentoId || veEjecucionColegio(s);
+
+/** Lo pagado de verdad y la desviación son para Dirección y contabilidad. */
+export const veGastoReal = (s: Sesion) => tiene(s, 'direccion', 'contabilidad', 'administrador');

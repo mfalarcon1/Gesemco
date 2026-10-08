@@ -42,14 +42,20 @@ export async function comoUsuario<T>(sesion: Sesion, trabajo: (tx: Tx) => Promis
 
 // Mensajes para las restricciones cuyo texto por defecto es técnico.
 const POR_RESTRICCION: Record<string, string> = {
-  uq_programa_nombre: 'Ya hay un programa con ese nombre en este periodo.',
-  programa_periodo_fkey: 'Ese periodo no existe: el año tiene los periodos 1, 2 y 3.',
+  uq_programa_nombre: 'Ya hay un programa con ese nombre en tu presupuesto.',
   uq_presupuesto_depto_anio: 'Este departamento ya tiene presupuesto para ese año.',
   ck_devuelto_con_comentario: 'Para devolver el presupuesto hay que escribirle un comentario al jefe.',
   ck_reparos_con_comentario: 'Para enviar reparos hay que escribirle al jefe qué tiene que corregir.',
   ck_denegado_con_explicacion: 'Para denegar hay que explicarle el motivo al jefe.',
   linea_presupuesto_cantidad_check: 'La cantidad tiene que ser mayor que cero.',
   linea_presupuesto_precio_unitario_check: 'El precio no puede ser negativo.',
+  linea_calendario_mes_check: 'Los meses van de enero a diciembre.',
+  linea_calendario_cantidad_check: 'La cantidad de cada mes tiene que ser mayor que cero.',
+  uq_linea_mes: 'Ese ítem ya tiene unidades en ese mes.',
+  item_orden_cantidad_check: 'La cantidad tiene que ser mayor que cero.',
+  item_orden_precio_presupuesto_check: 'El precio no puede ser negativo.',
+  compra_monto_total_check: 'El monto pagado no puede ser negativo.',
+  recepcion_orden_id_key: 'La recepción de ese pedido ya está confirmada.',
 };
 
 type ErrorPg = { message?: string; constraint?: string; code?: string };
@@ -123,6 +129,15 @@ const NOMBRE_CAMPO: Record<string, string> = {
   origen: 'de dónde sale el precio',
   cantidad: 'la cantidad',
   precio: 'el precio',
+  necesariaPara: 'la fecha en que lo necesitas',
+  observacion: 'para qué es',
+  explicacion: 'la explicación',
+  proveedor: 'el proveedor',
+  numeroDocumento: 'el número del documento',
+  fechaCompra: 'la fecha de la compra',
+  monto: 'el monto pagado',
+  observaciones: 'las observaciones',
+  problema: 'qué problema hubo',
 };
 
 const nombreCampo = (campo: string) => NOMBRE_CAMPO[campo] ?? campo;
@@ -152,4 +167,15 @@ export function idDe(form: FormData, campo: string): number {
   const n = Number(form.get(campo));
   if (!Number.isInteger(n) || n <= 0) throw new ErrorDeUsuario('Falta un identificador en el formulario.');
   return n;
+}
+
+/** Una fecha de un campo <input type="date">: "2026-10-20". */
+export function fechaDe(form: FormData, campo: string): string {
+  const valor = String(form.get(campo) ?? '').trim();
+  if (!valor) throw new ErrorDeUsuario(`Falta ${nombreCampo(campo)}.`);
+  const d = new Date(`${valor}T12:00:00Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(valor) || Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== valor) {
+    throw new ErrorDeUsuario(`${conMayuscula(nombreCampo(campo))} no es una fecha válida.`);
+  }
+  return valor;
 }

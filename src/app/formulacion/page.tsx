@@ -5,7 +5,7 @@ import { EstadoPresupuestoPildora } from '@/components/pildoras';
 import { ResumenFormulacion } from '@/components/resumen-formulacion';
 import { IconoFlecha } from '@/components/iconos';
 import { boton, tarjeta, td, tdNum, th, tituloPagina } from '@/components/ui';
-import { esContabilidad, esDireccion, getSesion, participaEnFormulacion } from '@/lib/sesion';
+import { esContabilidad, esDireccion, getSesion, participaEnFormulacion, veProyeccion } from '@/lib/sesion';
 import { resumenFormulacion } from '@/lib/formulacion';
 import { esperaRevision, ultimaNovedad } from '@/lib/etapas';
 import { fecha, money } from '@/lib/formato';
@@ -35,7 +35,7 @@ export default async function Formulacion() {
     );
   }
 
-  const { anio, formulacionHasta } = sesion.anioFormulacion;
+  const { anio, formulacionHasta, aprobacionHasta } = sesion.anioFormulacion;
   const filas = await resumenFormulacion(sesion.colegio.id, sesion.anioFormulacion.id);
   // Filas con un botón: el texto va centrado en altura, alineado con él.
   const celda = td.replace('align-top', 'align-middle');
@@ -53,13 +53,24 @@ export default async function Formulacion() {
     <>
       <Encabezado sesion={sesion} activo="formulacion" />
       <main className="mx-auto max-w-6xl px-5 pb-24 pt-8">
-        <h1 className={tituloPagina}>Presupuestos {anio}</h1>
-        <p className="mb-6 mt-2 max-w-3xl text-[17px] text-ink-2">
-          Cada jefe arma el presupuesto de su departamento en tres periodos y lo envía a Dirección, que lo conversa en
-          una reunión y lo aprueba o lo devuelve. Después lo revisa contabilidad: lo aprueba o envía reparos, y el jefe
-          se lo reenvía corregido directo a ella. Con los aprobados se arman las órdenes de compra de cada periodo.
-          {formulacionHasta && ` La formulación cierra el ${fecha(formulacionHasta)}.`}
-        </p>
+        <div className="mb-6 flex flex-wrap items-end gap-x-6 gap-y-3">
+          <div className="min-w-[16rem] flex-1">
+            <h1 className={tituloPagina}>Presupuestos {anio}</h1>
+            <p className="mt-2 max-w-3xl text-[17px] text-ink-2">
+              Cada jefe arma el presupuesto de su departamento, con los meses en que usará cada ítem, y lo envía a
+              Dirección, que lo conversa en una reunión y lo aprueba o lo devuelve. Después lo revisa contabilidad: lo
+              aprueba o envía reparos, y el jefe se lo reenvía corregido directo a ella.
+              {formulacionHasta && ` Se arma hasta el ${fecha(formulacionHasta)}`}
+              {aprobacionHasta && ` y se aprueba hasta el ${fecha(aprobacionHasta)}`}
+              {(formulacionHasta || aprobacionHasta) && '.'}
+            </p>
+          </div>
+          {veProyeccion(sesion) && (
+            <Link href="/proyeccion" className={boton.secundario}>
+              Proyección mensual {anio}<IconoFlecha className="size-4" />
+            </Link>
+          )}
+        </div>
 
         <ResumenFormulacion filas={filas} />
 

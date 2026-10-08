@@ -1,21 +1,23 @@
 -- =====================================================================
 --  GESEMCO · Sistema de gestión presupuestaria escolar
 --  Esquema relacional · PostgreSQL 15 o superior
---  v0.3 · 7 de octubre de 2026 · formulación por periodos
+--  v0.4 · 8 de octubre de 2026 · meses y pedidos del jefe
 --
---  Etapa 1, formulación (de septiembre a noviembre del año anterior).
---  El año se divide en tres periodos. Cada departamento arma, en cada
---  periodo, sus programas con líneas de artículos (del catálogo tipo
---  marketplace o líneas libres). Dirección aprueba o devuelve; después
---  contabilidad aprueba o envía reparos, que el jefe corrige y reenvía
---  directo a contabilidad. Lo aprobado forma las tres órdenes de compra
---  del colegio, una por periodo.
+--  Etapa 1, formulación: octubre del año anterior para armar el
+--  presupuesto y noviembre para aprobarlo. Cada departamento arma sus
+--  programas con líneas de artículos (del catálogo tipo marketplace o
+--  líneas libres) e indica cuántas unidades de cada línea usará en cada
+--  mes. Dirección aprueba o devuelve; después contabilidad aprueba o
+--  envía reparos, que el jefe corrige y reenvía directo a contabilidad.
+--  Lo aprobado, mes a mes, es la proyección de caja que recibe GESEMCO.
 --
---  Etapa 2, ejecución. El profesor solicita, el jefe emite la orden de
---  compra y el equipo de compra compra y registra el monto real. El
---  saldo se controla contra el total anual del departamento, siempre
---  a precio presupuesto. Si una orden no cabe, queda como pendiente
---  de pedido para Dirección.
+--  Etapa 2, ejecución. El jefe de departamento pide lo que necesita, con
+--  la fecha en que lo necesita (al menos una semana después). Si el
+--  pedido cabe en el disponible del departamento, pasa a orden de compra
+--  y descuenta a precio presupuesto; si no, espera a Dirección, que
+--  puede extender el presupuesto o denegarlo. El equipo de compra compra
+--  primero lo que se necesita antes y anota lo que pagó; el jefe confirma
+--  que llegó. Los meses son una guía: el control es el total del año.
 --
 --  Convenciones:
 --    · Montos en pesos chilenos, enteros y con IVA incluido. Nunca float.
@@ -26,6 +28,8 @@
 --    · Quién actúa: al inicio de cada transacción la aplicación hace
 --          SELECT set_config('app.usuario_id', '7', true);
 --      La bitácora, las resoluciones y las notificaciones lo leen de ahí.
+--    · Las fechas "de hoy" son las de Chile (America/Santiago), aunque el
+--      servidor esté en otra zona horaria.
 --
 --  Orden de ejecución: este archivo completo, de una vez, sobre una
 --  base vacía. Los datos de prueba están en db/datos_prueba.sql y las
@@ -40,18 +44,16 @@ BEGIN;
 
 CREATE TYPE etapa_anio         AS ENUM ('formulacion', 'ejecucion', 'cerrado');
 
-CREATE TYPE rol_sistema        AS ENUM ('profesor', 'jefe_departamento', 'direccion',
-                                        'contabilidad', 'equipo_compra', 'administrador');
+CREATE TYPE rol_sistema        AS ENUM ('jefe_departamento', 'direccion', 'contabilidad',
+                                        'equipo_compra', 'administrador');
 
 CREATE TYPE estado_presupuesto AS ENUM ('borrador', 'enviado', 'devuelto',
                                         'revision_contabilidad', 'con_reparos', 'aprobado');
 
-CREATE TYPE estado_solicitud   AS ENUM ('borrador', 'enviada', 'aprobada', 'rechazada', 'anulada');
-
 CREATE TYPE estado_orden       AS ENUM ('borrador', 'pendiente_direccion', 'emitida',
                                         'denegada', 'comprada', 'recibida', 'anulada');
 
-CREATE TYPE estado_pendiente   AS ENUM ('pendiente', 'aprobado', 'denegado');
+CREATE TYPE estado_pendiente   AS ENUM ('pendiente', 'aprobado', 'denegado', 'retirado');
 
 CREATE TYPE plataforma_tienda  AS ENUM ('vtex', 'woocommerce', 'shopify', 'jumpseller',
                                         'mercado_publico', 'manual');
@@ -68,38 +70,48 @@ CREATE TYPE accion_bitacora    AS ENUM ('crear', 'actualizar', 'cambiar_estado',
 -- ---------------------------------------------------------------------
 
 CREATE TABLE colegio (
-    id          serial       PRIMARY KEY,
-    nombre      text         NOT NULL,
-    rbd         text         NOT NULL UNIQUE,
-    direccion   text,
-    comuna      text,
-    activo      boolean      NOT NULL DEFAULT true,
-    creado_en   timestamptz  NOT NULL DEFAULT now()
+    id                 serial       PRIMARY KEY,
+    nombre             text         NOT NULL,
+    rbd                text         NOT NULL UNIQUE,
+    direccion          text,
+    comuna             text,
+    anticipacion_dias  smallint     NOT NULL DEFAULT 7,
+    activo             boolean      NOT NULL DEFAULT true,
+    creado_en          timestamptz  NOT NULL DEFAULT now(),
+
+    CONSTRAINT ck_anticipacion CHECK (anticipacion_dias BETWEEN 0 AND 60)
 );
 
 COMMENT ON TABLE colegio IS
     'Establecimiento educacional administrado por GESEMCO. RBD = rol base de datos del Mineduc.';
+COMMENT ON COLUMN colegio.anticipacion_dias IS
+    'Con cuánta anticipación se piden las compras: la fecha en que se necesita un pedido debe ser al menos esta cantidad de días después del día en que se pide.';
 
 
 CREATE TABLE anio_presupuestario (
-    id              serial      PRIMARY KEY,
-    colegio_id      integer     NOT NULL REFERENCES colegio (id),
-    anio            smallint    NOT NULL,
+    id                 serial      PRIMARY KEY,
+    colegio_id         integer     NOT NULL REFERENCES colegio (id),
+    anio               smallint    NOT NULL,
     etapa              etapa_anio  NOT NULL DEFAULT 'formulacion',
     fecha_apertura     date        NOT NULL DEFAULT CURRENT_DATE,
     formulacion_hasta  date,
+    aprobacion_hasta   date,
     fecha_cierre       date,
 
-    CONSTRAINT uq_anio_colegio  UNIQUE (colegio_id, anio),
-    CONSTRAINT ck_anio_rango    CHECK (anio BETWEEN 2020 AND 2100),
-    CONSTRAINT ck_anio_cierre   CHECK ((etapa = 'cerrado') = (fecha_cierre IS NOT NULL)),
-    CONSTRAINT ck_anio_plazo    CHECK (formulacion_hasta IS NULL OR formulacion_hasta >= fecha_apertura)
+    CONSTRAINT uq_anio_colegio      UNIQUE (colegio_id, anio),
+    CONSTRAINT ck_anio_rango        CHECK (anio BETWEEN 2020 AND 2100),
+    CONSTRAINT ck_anio_cierre       CHECK ((etapa = 'cerrado') = (fecha_cierre IS NOT NULL)),
+    CONSTRAINT ck_anio_plazo        CHECK (formulacion_hasta IS NULL OR formulacion_hasta >= fecha_apertura),
+    CONSTRAINT ck_anio_aprobacion   CHECK (aprobacion_hasta IS NULL OR formulacion_hasta IS NULL
+                                           OR aprobacion_hasta >= formulacion_hasta)
 );
 
 COMMENT ON TABLE anio_presupuestario IS
-    'formulacion: los departamentos arman su presupuesto, Dirección y contabilidad lo aprueban. ejecucion: se compra contra lo aprobado. cerrado: inmutable. Mientras se ejecuta un año se formula el siguiente, así que conviven dos años abiertos.';
+    'formulacion: los departamentos arman su presupuesto, Dirección y contabilidad lo aprueban. ejecucion: se pide y se compra contra lo aprobado. cerrado: inmutable. Mientras se ejecuta un año se formula el siguiente, así que conviven dos años abiertos.';
 COMMENT ON COLUMN anio_presupuestario.formulacion_hasta IS
-    'Hasta cuándo se formula: la formulación va de comienzos de septiembre a fines de noviembre del año anterior. Informativo; no bloquea nada.';
+    'Hasta cuándo se arma el presupuesto: fines de octubre del año anterior. Informativo; no bloquea nada.';
+COMMENT ON COLUMN anio_presupuestario.aprobacion_hasta IS
+    'Hasta cuándo lo aprueban Dirección y contabilidad: fines de noviembre del año anterior. Informativo; no bloquea nada.';
 
 
 CREATE TABLE usuario (
@@ -148,11 +160,9 @@ CREATE TABLE rol_asignado (
     hasta            date,
 
     CONSTRAINT uq_rol UNIQUE NULLS NOT DISTINCT (usuario_id, rol, departamento_id),
-    -- Profesor y jefe pertenecen a un departamento; los demás roles valen
-    -- para todo el colegio del usuario.
-    CONSTRAINT ck_rol_ambito CHECK (
-        (rol IN ('profesor', 'jefe_departamento')) = (departamento_id IS NOT NULL)
-    ),
+    -- El jefe pertenece a un departamento; los demás roles valen para
+    -- todo el colegio del usuario.
+    CONSTRAINT ck_rol_ambito CHECK ((rol = 'jefe_departamento') = (departamento_id IS NOT NULL)),
     CONSTRAINT ck_vigencia CHECK (hasta IS NULL OR hasta >= desde)
 );
 
@@ -161,7 +171,7 @@ CREATE UNIQUE INDEX uq_un_jefe_vigente ON rol_asignado (departamento_id)
     WHERE rol = 'jefe_departamento' AND hasta IS NULL;
 
 COMMENT ON TABLE rol_asignado IS
-    'Un profesor puede estar en varios departamentos (una fila por cada uno) y un jefe de departamento también puede hacer clases en otro. Los permisos salen de acá, nunca del nombre de la persona.';
+    'Los permisos salen de acá, nunca del nombre de la persona. Los profesores no usan el sistema: lo que necesita un departamento lo pide su jefe.';
 
 
 -- ---------------------------------------------------------------------
@@ -256,24 +266,6 @@ COMMENT ON COLUMN precio_observado.con_iva IS
 -- 4. Etapa 1 · Formulación
 -- ---------------------------------------------------------------------
 
-CREATE TABLE periodo (
-    numero     smallint  PRIMARY KEY CHECK (numero BETWEEN 1 AND 3),
-    nombre     text      NOT NULL UNIQUE,
-    mes_desde  smallint  NOT NULL,
-    mes_hasta  smallint  NOT NULL,
-
-    CONSTRAINT ck_periodo_meses CHECK (mes_desde BETWEEN 1 AND 12 AND mes_hasta BETWEEN mes_desde AND 12)
-);
-
-COMMENT ON TABLE periodo IS
-    'Los tres periodos del año escolar. Enero y febrero no pertenecen a ninguno. Si cambian, se cambian aquí y en src/lib/periodos.ts, que los nombra en la interfaz.';
-
-INSERT INTO periodo (numero, nombre, mes_desde, mes_hasta) VALUES
-    (1, 'Periodo 1',  3,  5),   -- marzo a mayo
-    (2, 'Periodo 2',  6,  8),   -- junio a agosto
-    (3, 'Periodo 3',  9, 12);   -- septiembre a diciembre
-
-
 CREATE TABLE presupuesto_departamento (
     id                         serial              PRIMARY KEY,
     departamento_id            integer             NOT NULL REFERENCES departamento (id),
@@ -303,7 +295,7 @@ CREATE TABLE presupuesto_departamento (
 );
 
 COMMENT ON TABLE presupuesto_departamento IS
-    'Presupuesto anual de un departamento. borrador → enviado (Dirección lo revisa) → revision_contabilidad → aprobado. Dirección puede devolverlo (enviado → devuelto → enviado) y contabilidad enviar reparos (revision_contabilidad → con_reparos → revision_contabilidad, sin volver a Dirección). El jefe puede retirar un envío a Dirección (enviado → borrador). Lo aprueba contabilidad: ahí se congela monto_aprobado y lo que venga después son modificaciones presupuestarias.';
+    'Presupuesto anual de un departamento. borrador → enviado (Dirección lo revisa) → revision_contabilidad → aprobado. Dirección puede devolverlo (enviado → devuelto → enviado) y contabilidad enviar reparos (revision_contabilidad → con_reparos → revision_contabilidad, sin volver a Dirección). El jefe puede retirar un envío a Dirección (enviado → borrador). Para enviarlo, cada ítem debe tener sus meses. Lo aprueba contabilidad: ahí se congela monto_aprobado y lo que venga después son modificaciones presupuestarias.';
 COMMENT ON COLUMN presupuesto_departamento.enviado_en IS
     'Último envío del jefe: a Dirección o, después de reparos, a contabilidad.';
 
@@ -311,18 +303,16 @@ COMMENT ON COLUMN presupuesto_departamento.enviado_en IS
 CREATE TABLE programa (
     id              serial       PRIMARY KEY,
     presupuesto_id  integer      NOT NULL REFERENCES presupuesto_departamento (id) ON DELETE CASCADE,
-    periodo         smallint     NOT NULL REFERENCES periodo (numero),
     nombre          text         NOT NULL,
     descripcion     text,
     creado_por      integer      REFERENCES usuario (id),
     creado_en       timestamptz  NOT NULL DEFAULT now()
 );
 
--- El mismo programa puede estar en varios periodos, pero una sola vez en cada uno.
-CREATE UNIQUE INDEX uq_programa_nombre ON programa (presupuesto_id, periodo, lower(nombre));
+CREATE UNIQUE INDEX uq_programa_nombre ON programa (presupuesto_id, lower(nombre));
 
 COMMENT ON TABLE programa IS
-    'Lo que el departamento hará en un periodo (una olimpiada, una salida, el material de las clases), con lo que necesita en sus líneas. Un programa que sigue en otro periodo se vuelve a ingresar en ese periodo, con lo que necesitará ahí.';
+    'Lo que el departamento hará en el año (una olimpiada, una salida, el material de las clases), con lo que necesita en sus líneas.';
 
 
 CREATE TABLE linea_presupuesto (
@@ -348,51 +338,30 @@ COMMENT ON COLUMN linea_presupuesto.origen_precio IS
     'De dónde salió el precio, para quien revise: "Mediana de 3 ofertas al 24-09-2026", "Cotización del proveedor", "Ajustado por el jefe".';
 
 
+CREATE TABLE linea_calendario (
+    id        serial    PRIMARY KEY,
+    linea_id  integer   NOT NULL REFERENCES linea_presupuesto (id) ON DELETE CASCADE,
+    mes       smallint  NOT NULL CHECK (mes BETWEEN 1 AND 12),
+    cantidad  integer   NOT NULL CHECK (cantidad > 0),
+
+    CONSTRAINT uq_linea_mes UNIQUE (linea_id, mes)
+);
+
+COMMENT ON TABLE linea_calendario IS
+    'Cuántas unidades de la línea se usarán en cada mes. Las indica el jefe al armar el presupuesto: la suma no puede pasar la cantidad de la línea, y para enviarlo todas las unidades deben tener su mes. Es una guía para la caja de GESEMCO: durante el año se puede pedir antes, después o más en un mes, mientras el total quepa en el presupuesto.';
+
+
 -- ---------------------------------------------------------------------
 -- 5. Etapa 2 · Ejecución
 -- ---------------------------------------------------------------------
-
-CREATE TABLE solicitud_compra (
-    id               serial            PRIMARY KEY,
-    folio            text              NOT NULL UNIQUE,
-    presupuesto_id   integer           NOT NULL REFERENCES presupuesto_departamento (id),
-    solicitante_id   integer           NOT NULL REFERENCES usuario (id),
-    estado           estado_solicitud  NOT NULL DEFAULT 'borrador',
-    justificacion    text,
-    fecha_solicitud  date              NOT NULL DEFAULT CURRENT_DATE,
-    resuelto_por     integer           REFERENCES usuario (id),
-    resuelto_en      timestamptz,
-    motivo_rechazo   text,
-    creado_en        timestamptz       NOT NULL DEFAULT now(),
-
-    CONSTRAINT ck_rechazo_con_motivo CHECK (
-        estado <> 'rechazada' OR nullif(btrim(motivo_rechazo), '') IS NOT NULL
-    )
-);
-
-COMMENT ON TABLE solicitud_compra IS
-    'Lo que pide un profesor a su jefe de departamento. Si el jefe la aprueba, se convierte en orden de compra.';
-
-
-CREATE TABLE item_solicitud (
-    id                 serial   PRIMARY KEY,
-    solicitud_id       integer  NOT NULL REFERENCES solicitud_compra (id) ON DELETE CASCADE,
-    linea_id           integer  REFERENCES linea_presupuesto (id),
-    articulo_id        integer  REFERENCES articulo (id),
-    descripcion        text     NOT NULL,
-    cantidad           integer  NOT NULL CHECK (cantidad > 0),
-    precio_referencia  integer  NOT NULL CHECK (precio_referencia >= 0),
-    subtotal           bigint   GENERATED ALWAYS AS (cantidad::bigint * precio_referencia) STORED
-);
-
 
 CREATE TABLE orden_compra (
     id                 serial        PRIMARY KEY,
     folio              text          NOT NULL UNIQUE,
     presupuesto_id     integer       NOT NULL REFERENCES presupuesto_departamento (id),
-    solicitud_id       integer       REFERENCES solicitud_compra (id),
     emitida_por        integer       NOT NULL REFERENCES usuario (id),
     estado             estado_orden  NOT NULL DEFAULT 'borrador',
+    necesaria_para     date          NOT NULL,
     monto_presupuesto  bigint        NOT NULL DEFAULT 0 CHECK (monto_presupuesto >= 0),
     fecha_emision      timestamptz,
     observacion        text,
@@ -400,10 +369,14 @@ CREATE TABLE orden_compra (
     actualizado_en     timestamptz   NOT NULL DEFAULT now()
 );
 
+COMMENT ON TABLE orden_compra IS
+    'Un pedido del jefe de departamento. Si cabe en el disponible pasa a orden de compra (emitida) para el equipo de compra; si no, espera a Dirección como solicitud para extender el presupuesto.';
+COMMENT ON COLUMN orden_compra.necesaria_para IS
+    'Para cuándo se necesita. Al pedir, debe ser al menos colegio.anticipacion_dias después del día del pedido (creado_en) y del año del presupuesto. El equipo de compra compra primero lo que se necesita antes.';
 COMMENT ON COLUMN orden_compra.monto_presupuesto IS
     'Suma de los ítems a precio presupuesto. Es lo que descuenta del saldo del departamento, aunque la compra real cueste otra cosa. Lo mantiene un trigger.';
 COMMENT ON COLUMN orden_compra.estado IS
-    'borrador → emitida (cabe en el disponible) o pendiente_direccion (no cabe). pendiente_direccion → emitida o denegada, según resuelva Dirección. emitida → comprada → recibida. borrador o emitida → anulada.';
+    'borrador → emitida (cabe en el disponible) o pendiente_direccion (no cabe). pendiente_direccion → emitida o denegada, según resuelva Dirección, o anulada si el jefe la retira. emitida → comprada (al registrar la compra) → recibida (al confirmar la recepción). borrador o emitida → anulada.';
 
 
 CREATE TABLE item_orden (
@@ -419,8 +392,10 @@ CREATE TABLE item_orden (
     cuenta_contable_id  integer  REFERENCES cuenta_contable (id)
 );
 
+COMMENT ON COLUMN item_orden.linea_id IS
+    'La línea del presupuesto que se pide. Se puede pedir cualquier cantidad: lo que se controla es el total del año del departamento.';
 COMMENT ON COLUMN item_orden.no_planificado IS
-    'El artículo no estaba en el presupuesto del departamento. El jefe puede aprobarlo si hay saldo; contabilidad lo ve marcado.';
+    'No estaba en el presupuesto del departamento. Se pide igual: si cabe en el disponible pasa a compra; contabilidad lo ve marcado.';
 
 
 CREATE TABLE pendiente_pedido (
@@ -444,8 +419,10 @@ CREATE TABLE pendiente_pedido (
     )
 );
 
+COMMENT ON TABLE pendiente_pedido IS
+    'La solicitud a Dirección para extender el presupuesto, cuando un pedido no cabe. Dirección la aprueba (sube el presupuesto en lo que falte y el pedido pasa a compra) o la deniega con una explicación. Si el jefe anula el pedido antes, queda retirada.';
 COMMENT ON COLUMN pendiente_pedido.monto_excedido IS
-    'Cuánto faltaba al momento de emitir. Se congela: si después entra plata, el registro sigue contando la historia real.';
+    'Cuánto faltaba al momento de pedir. Se congela: si después entra plata, el registro sigue contando la historia real.';
 
 
 CREATE TABLE modificacion_presupuestaria (
@@ -459,7 +436,7 @@ CREATE TABLE modificacion_presupuestaria (
 );
 
 COMMENT ON TABLE modificacion_presupuestaria IS
-    'Explica por qué el vigente no es el aprobado. Positivo = aumento (por ejemplo, un pendiente de pedido aprobado por Dirección); negativo = recorte.';
+    'Explica por qué el vigente no es el aprobado. Positivo = aumento (por ejemplo, una extensión aprobada por Dirección); negativo = recorte.';
 
 
 CREATE TABLE compra (
@@ -469,7 +446,7 @@ CREATE TABLE compra (
     proveedor         text            NOT NULL,
     tipo_documento    tipo_documento  NOT NULL DEFAULT 'factura',
     numero_documento  text,
-    fecha_compra      date            NOT NULL DEFAULT CURRENT_DATE,
+    fecha_compra      date            NOT NULL DEFAULT (now() AT TIME ZONE 'America/Santiago')::date,
     monto_total       integer         NOT NULL CHECK (monto_total >= 0),
     registrada_por    integer         NOT NULL REFERENCES usuario (id),
     observaciones     text,
@@ -477,17 +454,20 @@ CREATE TABLE compra (
 );
 
 COMMENT ON TABLE compra IS
-    'Lo que el equipo de compra pagó de verdad, con IVA. Una orden puede comprarse en más de una compra (despachos parciales, dos proveedores). No toca el saldo: alimenta la desviación que ve contabilidad.';
+    'Lo que el equipo de compra pagó de verdad, con IVA. La primera compra de un pedido lo marca comprado; puede haber más (despachos parciales, dos proveedores). No toca el saldo: alimenta la desviación que ve contabilidad.';
 
 
 CREATE TABLE recepcion (
     id               serial   PRIMARY KEY,
     orden_id         integer  NOT NULL UNIQUE REFERENCES orden_compra (id),
     recibido_por     integer  NOT NULL REFERENCES usuario (id),
-    fecha_recepcion  date     NOT NULL DEFAULT CURRENT_DATE,
+    fecha_recepcion  date     NOT NULL DEFAULT (now() AT TIME ZONE 'America/Santiago')::date,
     conforme         boolean  NOT NULL DEFAULT true,
     observaciones    text
 );
+
+COMMENT ON TABLE recepcion IS
+    'El jefe confirma que llegó lo comprado, y si llegó bien. Marca el pedido recibido.';
 
 
 -- ---------------------------------------------------------------------
@@ -496,8 +476,7 @@ CREATE TABLE recepcion (
 
 CREATE TABLE adjunto (
     id          serial        PRIMARY KEY,
-    entidad     text          NOT NULL CHECK (entidad IN ('linea_presupuesto', 'solicitud_compra',
-                                                          'orden_compra', 'compra')),
+    entidad     text          NOT NULL CHECK (entidad IN ('linea_presupuesto', 'orden_compra', 'compra')),
     entidad_id  integer       NOT NULL,
     tipo        tipo_adjunto  NOT NULL,
     nombre      text          NOT NULL,
@@ -560,12 +539,11 @@ CREATE INDEX ix_articulo_categoria     ON articulo (categoria_id);
 CREATE INDEX ix_producto_articulo      ON producto_tienda (articulo_id);
 CREATE INDEX ix_precio_producto_fecha  ON precio_observado (producto_tienda_id, observado_en DESC);
 CREATE INDEX ix_presupuesto_anio       ON presupuesto_departamento (anio_id);
-CREATE INDEX ix_programa_presupuesto   ON programa (presupuesto_id, periodo);
+CREATE INDEX ix_programa_presupuesto   ON programa (presupuesto_id);
 CREATE INDEX ix_linea_programa         ON linea_presupuesto (programa_id);
 CREATE INDEX ix_linea_articulo         ON linea_presupuesto (articulo_id);
-CREATE INDEX ix_solicitud_presupuesto  ON solicitud_compra (presupuesto_id);
-CREATE INDEX ix_item_solicitud         ON item_solicitud (solicitud_id);
 CREATE INDEX ix_orden_presupuesto      ON orden_compra (presupuesto_id, estado);
+CREATE INDEX ix_orden_necesaria        ON orden_compra (estado, necesaria_para);
 CREATE INDEX ix_item_orden             ON item_orden (orden_id);
 CREATE INDEX ix_item_orden_linea       ON item_orden (linea_id);
 CREATE INDEX ix_modificacion_pres      ON modificacion_presupuestaria (presupuesto_id);
@@ -634,7 +612,25 @@ WHERE a.activo
 GROUP BY a.id, c.id;
 
 
--- 8.3 Estado de la formulación de cada departamento en cada año. Incluye
+-- 8.3 Cuánto de cada línea ya tiene mes. Para enviar el presupuesto,
+--     cantidad_sin_mes tiene que ser 0 en todas sus líneas.
+CREATE VIEW vw_calendarizacion_linea AS
+SELECT
+    l.id                                                        AS linea_id,
+    l.programa_id,
+    p.presupuesto_id,
+    l.cantidad,
+    COALESCE(sum(lc.cantidad), 0)                               AS cantidad_con_mes,
+    l.cantidad - COALESCE(sum(lc.cantidad), 0)                  AS cantidad_sin_mes,
+    (l.cantidad - COALESCE(sum(lc.cantidad), 0))::bigint * l.precio_unitario
+                                                                AS monto_sin_mes
+FROM linea_presupuesto l
+JOIN programa p ON p.id = l.programa_id
+LEFT JOIN linea_calendario lc ON lc.linea_id = l.id
+GROUP BY l.id, p.id;
+
+
+-- 8.4 Estado de la formulación de cada departamento en cada año. Incluye
 --     los departamentos que todavía no empiezan (estado null).
 CREATE VIEW vw_presupuesto_departamento AS
 WITH lineas AS (
@@ -646,6 +642,12 @@ WITH lineas AS (
       FROM programa p
       LEFT JOIN linea_presupuesto l ON l.programa_id = p.id
      GROUP BY p.presupuesto_id
+), sin_mes AS (
+    SELECT presupuesto_id,
+           count(*) FILTER (WHERE cantidad_sin_mes > 0)  AS lineas_sin_mes,
+           COALESCE(sum(monto_sin_mes), 0)               AS monto_sin_mes
+      FROM vw_calendarizacion_linea
+     GROUP BY presupuesto_id
 ), modificaciones AS (
     SELECT presupuesto_id, sum(monto) AS modificaciones
       FROM modificacion_presupuestaria
@@ -660,6 +662,7 @@ SELECT
     ap.anio,
     ap.etapa,
     ap.formulacion_hasta,
+    ap.aprobacion_hasta,
     pd.id                               AS presupuesto_id,
     pd.estado,
     pd.enviado_en,
@@ -674,6 +677,8 @@ SELECT
                                         AS en_contabilidad_desde,
     COALESCE(l.programas, 0)            AS programas,
     COALESCE(l.lineas, 0)               AS lineas,
+    COALESCE(s.lineas_sin_mes, 0)       AS lineas_sin_mes,
+    COALESCE(s.monto_sin_mes, 0)        AS monto_sin_mes,
     COALESCE(l.formulado, 0)            AS formulado,
     COALESCE(l.fuera_catalogo, 0)       AS fuera_catalogo,
     pd.monto_aprobado,
@@ -685,19 +690,20 @@ FROM departamento d
 JOIN anio_presupuestario ap ON ap.colegio_id = d.colegio_id
 LEFT JOIN presupuesto_departamento pd ON pd.departamento_id = d.id AND pd.anio_id = ap.id
 LEFT JOIN lineas         l ON l.presupuesto_id = pd.id
+LEFT JOIN sin_mes        s ON s.presupuesto_id = pd.id
 LEFT JOIN modificaciones m ON m.presupuesto_id = pd.id
 WHERE d.activo;
 
 COMMENT ON VIEW vw_presupuesto_departamento IS
-    'estado null = el departamento todavía no empieza su formulación. vigente = aprobado + modificaciones, y vale 0 mientras no esté aprobado.';
+    'estado null = el departamento todavía no empieza su formulación. lineas_sin_mes = ítems a los que les faltan meses: con alguno no se puede enviar. vigente = aprobado + modificaciones, y vale 0 mientras no esté aprobado.';
 
 
--- 8.4 El saldo de la ejecución, siempre a precio presupuesto.
---       comprometido  órdenes emitidas, esperando la compra
---       ejecutado     órdenes compradas o recibidas
+-- 8.5 El saldo de la ejecución, siempre a precio presupuesto.
+--       comprometido  pedidos por comprar (emitidos)
+--       ejecutado     pedidos comprados o recibidos
 --       disponible    vigente − comprometido − ejecutado
---     Las órdenes pendientes de Dirección no tocan el saldo: si Dirección
---     aprueba, primero aumenta el presupuesto y recién ahí se emiten.
+--     Los pedidos que esperan a Dirección no tocan el saldo: si Dirección
+--     aprueba, primero aumenta el presupuesto y recién ahí pasan a compra.
 CREATE VIEW vw_saldo_departamento AS
 WITH ordenes AS (
     SELECT presupuesto_id,
@@ -742,70 +748,150 @@ LEFT JOIN reales  r ON r.presupuesto_id = v.presupuesto_id
 WHERE v.estado = 'aprobado';
 
 COMMENT ON VIEW vw_saldo_departamento IS
-    'desviacion = lo pagado de verdad por las órdenes compradas − lo que esas órdenes descontaron a precio presupuesto. Positiva: se pagó más de lo presupuestado.';
+    'desviacion = lo pagado de verdad por los pedidos comprados − lo que esos pedidos descontaron a precio presupuesto. Positiva: se pagó más de lo presupuestado.';
 
 
--- 8.5 Cuánto pide cada departamento en cada periodo. Incluye todos los
---     estados: la aplicación decide si muestra solo lo aprobado.
-CREATE VIEW vw_proyeccion_periodo AS
+-- 8.6 Mes a mes de cada presupuesto: lo planificado al formular (los meses
+--     de cada línea por su precio) y lo pedido durante el año (los pedidos
+--     que pasaron a compra, en el mes en que se necesitan). Las doce filas
+--     de cada presupuesto existen siempre, aunque valgan cero. Incluye
+--     todos los estados: la aplicación decide si muestra solo lo aprobado.
+CREATE VIEW vw_mes_departamento AS
+WITH meses AS (
+    SELECT generate_series(1, 12)::smallint AS mes
+), plan AS (
+    SELECT p.presupuesto_id, lc.mes, sum(lc.cantidad::bigint * l.precio_unitario) AS monto
+      FROM linea_calendario lc
+      JOIN linea_presupuesto l ON l.id = lc.linea_id
+      JOIN programa          p ON p.id = l.programa_id
+     GROUP BY p.presupuesto_id, lc.mes
+), pedidos AS (
+    SELECT presupuesto_id,
+           extract(month FROM necesaria_para)::smallint AS mes,
+           sum(monto_presupuesto)                        AS monto,
+           count(*)                                      AS cantidad
+      FROM orden_compra
+     WHERE estado IN ('emitida', 'comprada', 'recibida')
+     GROUP BY presupuesto_id, extract(month FROM necesaria_para)
+)
 SELECT
-    pd.id                          AS presupuesto_id,
     d.colegio_id,
-    d.id                           AS departamento_id,
-    d.nombre                       AS departamento,
+    d.id                        AS departamento_id,
+    d.nombre                    AS departamento,
     d.centro_costo,
-    ap.id                          AS anio_id,
+    ap.id                       AS anio_id,
     ap.anio,
+    pd.id                       AS presupuesto_id,
     pd.estado,
-    p.periodo,
-    count(DISTINCT p.id)           AS programas,
-    count(l.id)                    AS lineas,
-    COALESCE(sum(l.subtotal), 0)   AS monto
-FROM programa p
-JOIN presupuesto_departamento pd ON pd.id = p.presupuesto_id
-JOIN departamento             d  ON d.id  = pd.departamento_id
-JOIN anio_presupuestario      ap ON ap.id = pd.anio_id
-LEFT JOIN linea_presupuesto   l  ON l.programa_id = p.id
-GROUP BY pd.id, d.id, ap.id, p.periodo;
+    m.mes,
+    COALESCE(pl.monto, 0)       AS planificado,
+    COALESCE(pe.monto, 0)       AS pedido,
+    COALESCE(pe.cantidad, 0)    AS pedidos
+FROM presupuesto_departamento pd
+JOIN departamento        d  ON d.id  = pd.departamento_id
+JOIN anio_presupuestario ap ON ap.id = pd.anio_id
+CROSS JOIN meses m
+LEFT JOIN plan    pl ON pl.presupuesto_id = pd.id AND pl.mes = m.mes
+LEFT JOIN pedidos pe ON pe.presupuesto_id = pd.id AND pe.mes = m.mes;
+
+COMMENT ON VIEW vw_mes_departamento IS
+    'planificado: lo que el jefe indicó para cada mes al formular, a precio presupuesto. pedido: lo que pasó a compra (por comprar, comprado o recibido) para ese mes, según la fecha en que se necesita. Pedir más o menos en un mes no importa mientras el total quepa en el presupuesto: los meses le sirven a GESEMCO para tener el dinero a tiempo.';
 
 
--- 8.6 Las órdenes de compra que recibe GESEMCO: una por periodo, del
---     colegio completo, con el detalle de cada departamento. Son las
---     líneas de los presupuestos aprobados por contabilidad.
-CREATE VIEW vw_orden_periodo AS
+-- 8.7 Cuánto se ha pedido de cada línea del presupuesto. Se puede pedir
+--     más o menos que lo planificado: es información, no un tope.
+CREATE VIEW vw_linea_pedida AS
 SELECT
-    ap.colegio_id,
-    ap.id                AS anio_id,
-    ap.anio,
-    p.periodo,
-    d.id                 AS departamento_id,
-    d.nombre             AS departamento,
-    d.centro_costo,
-    pd.id                AS presupuesto_id,
-    p.id                 AS programa_id,
-    p.nombre             AS programa,
-    l.id                 AS linea_id,
-    l.articulo_id,
-    l.descripcion,
+    l.id                                                                          AS linea_id,
+    p.presupuesto_id,
     l.cantidad,
-    l.precio_unitario,
-    l.subtotal,
-    l.fuera_catalogo,
-    cc.codigo            AS cuenta_codigo,
-    cc.nombre            AS cuenta_nombre
-FROM linea_presupuesto        l
-JOIN programa                 p  ON p.id  = l.programa_id
-JOIN presupuesto_departamento pd ON pd.id = p.presupuesto_id
+    COALESCE(sum(i.cantidad) FILTER (WHERE o.estado IN ('emitida', 'comprada', 'recibida')), 0) AS pedida,
+    COALESCE(sum(i.cantidad) FILTER (WHERE o.estado = 'pendiente_direccion'), 0)              AS en_espera
+FROM linea_presupuesto l
+JOIN programa p ON p.id = l.programa_id
+LEFT JOIN item_orden   i ON i.linea_id = l.id
+LEFT JOIN orden_compra o ON o.id = i.orden_id
+GROUP BY l.id, p.presupuesto_id;
+
+
+-- 8.8 Cada pedido con lo que hace falta para mostrarlo en una lista: el
+--     departamento, sus ítems en una frase, lo pagado, la recepción y la
+--     solicitud a Dirección si la hubo. Sin los borradores, que la
+--     aplicación crea y pide en la misma transacción.
+CREATE VIEW vw_pedido AS
+WITH items AS (
+    SELECT i.orden_id,
+           count(*)                                                              AS items,
+           string_agg(i.descripcion || ' × ' || i.cantidad, ', ' ORDER BY i.id)  AS detalle,
+           bool_or(i.linea_id IS NULL)                                           AS no_planificado,
+           string_agg(DISTINCT cc.codigo || ' ' || cc.nombre, ', ')              AS cuenta
+      FROM item_orden i
+      LEFT JOIN cuenta_contable cc ON cc.id = i.cuenta_contable_id
+     GROUP BY i.orden_id
+), compras AS (
+    SELECT orden_id,
+           sum(monto_total)                                                      AS pagado,
+           max(fecha_compra)                                                     AS fecha_compra,
+           string_agg(DISTINCT proveedor, ', ')                                  AS proveedor,
+           string_agg(initcap(tipo_documento::text) || COALESCE(' ' || numero_documento, ''), ', ' ORDER BY id)
+                                                                                 AS documento
+      FROM compra
+     GROUP BY orden_id
+)
+SELECT
+    o.id                                AS orden_id,
+    o.folio,
+    o.estado,
+    o.necesaria_para,
+    o.creado_en                         AS pedido_en,
+    o.fecha_emision,
+    o.monto_presupuesto                 AS monto,
+    o.observacion,
+    o.emitida_por,
+    u.nombre                            AS pedido_por,
+    d.colegio_id,
+    d.id                                AS departamento_id,
+    d.nombre                            AS departamento,
+    d.centro_costo,
+    ap.id                               AS anio_id,
+    ap.anio,
+    o.presupuesto_id,
+    COALESCE(i.items, 0)                AS items,
+    i.detalle,
+    COALESCE(i.no_planificado, false)   AS no_planificado,
+    i.cuenta,
+    c.pagado,
+    c.pagado - o.monto_presupuesto      AS diferencia,
+    c.fecha_compra,
+    c.proveedor,
+    c.documento,
+    r.fecha_recepcion,
+    r.conforme,
+    r.observaciones                     AS observacion_recepcion,
+    pp.id                               AS pendiente_id,
+    pp.estado                           AS estado_solicitud,
+    pp.monto_excedido,
+    pp.disponible_al_emitir,
+    pp.explicacion,
+    pp.resuelto_en,
+    m.monto                             AS extension
+FROM orden_compra o
+JOIN presupuesto_departamento pd ON pd.id = o.presupuesto_id
 JOIN departamento             d  ON d.id  = pd.departamento_id
 JOIN anio_presupuestario      ap ON ap.id = pd.anio_id
-LEFT JOIN cuenta_contable     cc ON cc.id = l.cuenta_contable_id
-WHERE pd.estado = 'aprobado';
+JOIN usuario                  u  ON u.id  = o.emitida_por
+LEFT JOIN items                       i  ON i.orden_id = o.id
+LEFT JOIN compras                     c  ON c.orden_id = o.id
+LEFT JOIN recepcion                   r  ON r.orden_id = o.id
+LEFT JOIN pendiente_pedido            pp ON pp.orden_id = o.id
+LEFT JOIN modificacion_presupuestaria m  ON m.pendiente_id = pp.id
+WHERE o.estado <> 'borrador';
 
-COMMENT ON VIEW vw_orden_periodo IS
-    'Una fila por línea de un presupuesto aprobado. Filtrada por año y periodo es la orden de compra de ese periodo. Montos a precio presupuesto, con IVA.';
+COMMENT ON VIEW vw_pedido IS
+    'diferencia = lo pagado − lo presupuestado (null mientras no se compra). extension = lo que Dirección sumó al presupuesto para que el pedido cupiera.';
 
 
--- 8.7 El consolidado del colegio que hoy contabilidad arma a mano.
+-- 8.9 El consolidado del colegio que hoy contabilidad arma a mano.
 CREATE VIEW vw_consolidado_colegio AS
 SELECT
     c.id                  AS colegio_id,
@@ -857,7 +943,21 @@ CREATE FUNCTION fn_nombre_estado(p_estado estado_presupuesto) RETURNS text AS $$
 $$ LANGUAGE sql IMMUTABLE;
 
 
--- 9.4 Aviso a todos los usuarios vigentes con un rol. Con departamento,
+-- 9.4 Lo mismo para un pedido.
+CREATE FUNCTION fn_nombre_estado_orden(p_estado estado_orden) RETURNS text AS $$
+    SELECT CASE p_estado
+        WHEN 'borrador'            THEN 'en borrador'
+        WHEN 'pendiente_direccion' THEN 'esperando a Dirección'
+        WHEN 'emitida'             THEN 'por comprar'
+        WHEN 'denegada'            THEN 'denegado'
+        WHEN 'comprada'            THEN 'comprado'
+        WHEN 'recibida'            THEN 'recibido'
+        WHEN 'anulada'             THEN 'anulado'
+    END;
+$$ LANGUAGE sql IMMUTABLE;
+
+
+-- 9.5 Aviso a todos los usuarios vigentes con un rol. Con departamento,
 --     solo a los de ese departamento.
 CREATE FUNCTION fn_notificar_rol(
     p_colegio_id      integer,
@@ -879,8 +979,8 @@ CREATE FUNCTION fn_notificar_rol(
 $$ LANGUAGE sql;
 
 
--- 9.5 Folio correlativo por año y tipo de documento, a prueba de
---     concurrencia: 'OC-2027-0001', 'SC-2027-0001'.
+-- 9.6 Folio correlativo por año y tipo de documento, a prueba de
+--     concurrencia: 'OC-2027-0001'.
 CREATE FUNCTION fn_folio(p_prefijo text, p_presupuesto_id integer) RETURNS text AS $$
 DECLARE
     v_anio_id  integer;
@@ -907,7 +1007,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 
--- 9.6 A qué año presupuestario pertenece una fila de cualquier tabla del
+-- 9.7 A qué año presupuestario pertenece una fila de cualquier tabla del
 --     presupuesto. Trabaja sobre jsonb para servir a todas las tablas
 --     con una sola función. Devuelve null si no lo puede resolver (por
 --     ejemplo, en un borrado en cascada donde el padre ya no existe).
@@ -928,10 +1028,6 @@ BEGIN
         SELECT pd.anio_id INTO v_anio
           FROM orden_compra o JOIN presupuesto_departamento pd ON pd.id = o.presupuesto_id
          WHERE o.id = (p_fila ->> 'orden_id')::integer;
-    ELSIF p_fila ? 'solicitud_id' THEN
-        SELECT pd.anio_id INTO v_anio
-          FROM solicitud_compra s JOIN presupuesto_departamento pd ON pd.id = s.presupuesto_id
-         WHERE s.id = (p_fila ->> 'solicitud_id')::integer;
     ELSIF p_fila ? 'linea_id' THEN
         SELECT pd.anio_id INTO v_anio
           FROM linea_presupuesto l
@@ -986,11 +1082,9 @@ CREATE TRIGGER trg_a_anio_programa BEFORE INSERT OR UPDATE OR DELETE ON programa
     FOR EACH ROW EXECUTE FUNCTION fn_guardia_anio_cerrado();
 CREATE TRIGGER trg_a_anio_linea BEFORE INSERT OR UPDATE OR DELETE ON linea_presupuesto
     FOR EACH ROW EXECUTE FUNCTION fn_guardia_anio_cerrado();
+CREATE TRIGGER trg_a_anio_calendario BEFORE INSERT OR UPDATE OR DELETE ON linea_calendario
+    FOR EACH ROW EXECUTE FUNCTION fn_guardia_anio_cerrado();
 CREATE TRIGGER trg_a_anio_modificacion BEFORE INSERT OR UPDATE OR DELETE ON modificacion_presupuestaria
-    FOR EACH ROW EXECUTE FUNCTION fn_guardia_anio_cerrado();
-CREATE TRIGGER trg_a_anio_solicitud BEFORE INSERT OR UPDATE OR DELETE ON solicitud_compra
-    FOR EACH ROW EXECUTE FUNCTION fn_guardia_anio_cerrado();
-CREATE TRIGGER trg_a_anio_item_solicitud BEFORE INSERT OR UPDATE OR DELETE ON item_solicitud
     FOR EACH ROW EXECUTE FUNCTION fn_guardia_anio_cerrado();
 CREATE TRIGGER trg_a_anio_orden BEFORE INSERT OR UPDATE OR DELETE ON orden_compra
     FOR EACH ROW EXECUTE FUNCTION fn_guardia_anio_cerrado();
@@ -1002,9 +1096,10 @@ CREATE TRIGGER trg_a_anio_recepcion BEFORE INSERT OR UPDATE OR DELETE ON recepci
     FOR EACH ROW EXECUTE FUNCTION fn_guardia_anio_cerrado();
 
 
--- 10.2 Programas y líneas solo se tocan mientras el jefe tiene el
---      presupuesto: en preparación, devuelto por Dirección o con reparos
---      de contabilidad. Mientras lo revisan, o ya aprobado, quedan fijos.
+-- 10.2 Programas, líneas y sus meses solo se tocan mientras el jefe tiene
+--      el presupuesto: en preparación, devuelto por Dirección o con
+--      reparos de contabilidad. Mientras lo revisan, o ya aprobado,
+--      quedan fijos.
 CREATE FUNCTION fn_guardia_presupuesto_editable() RETURNS trigger AS $$
 DECLARE
     v_fila         jsonb;
@@ -1020,6 +1115,10 @@ BEGIN
 
     IF TG_TABLE_NAME = 'programa' THEN
         v_presupuesto := (v_fila ->> 'presupuesto_id')::integer;
+    ELSIF TG_TABLE_NAME = 'linea_calendario' THEN
+        SELECT p.presupuesto_id INTO v_presupuesto
+          FROM linea_presupuesto l JOIN programa p ON p.id = l.programa_id
+         WHERE l.id = (v_fila ->> 'linea_id')::integer;
     ELSE
         SELECT presupuesto_id INTO v_presupuesto
           FROM programa WHERE id = (v_fila ->> 'programa_id')::integer;
@@ -1031,7 +1130,7 @@ BEGIN
      WHERE pd.id = v_presupuesto;
 
     IF v_estado IN ('enviado', 'revision_contabilidad', 'aprobado') THEN
-        RAISE EXCEPTION 'El presupuesto de % está %: no se pueden cambiar sus programas ni sus ítems',
+        RAISE EXCEPTION 'El presupuesto de % está %: no se pueden cambiar sus programas, sus ítems ni sus meses',
             v_depto, fn_nombre_estado(v_estado)
             USING ERRCODE = 'check_violation';
     END IF;
@@ -1047,9 +1146,68 @@ CREATE TRIGGER trg_b_editable_programa BEFORE INSERT OR UPDATE OR DELETE ON prog
     FOR EACH ROW EXECUTE FUNCTION fn_guardia_presupuesto_editable();
 CREATE TRIGGER trg_b_editable_linea BEFORE INSERT OR UPDATE OR DELETE ON linea_presupuesto
     FOR EACH ROW EXECUTE FUNCTION fn_guardia_presupuesto_editable();
+CREATE TRIGGER trg_b_editable_calendario BEFORE INSERT OR UPDATE OR DELETE ON linea_calendario
+    FOR EACH ROW EXECUTE FUNCTION fn_guardia_presupuesto_editable();
 
 
--- 10.3 Ciclo de vida del presupuesto de un departamento.
+-- 10.3 Los meses de una línea no pueden sumar más que la línea.
+CREATE FUNCTION fn_calendario_cuadra() RETURNS trigger AS $$
+DECLARE
+    v_total        integer;
+    v_descripcion  text;
+    v_otros        integer;
+BEGIN
+    -- Bloquea la línea para que dos repartos simultáneos no se pasen.
+    SELECT cantidad, descripcion INTO v_total, v_descripcion
+      FROM linea_presupuesto WHERE id = NEW.linea_id FOR UPDATE;
+
+    SELECT COALESCE(sum(cantidad), 0) INTO v_otros
+      FROM linea_calendario
+     WHERE linea_id = NEW.linea_id
+       AND id IS DISTINCT FROM NEW.id;
+
+    IF v_otros + NEW.cantidad > v_total THEN
+        RAISE EXCEPTION '"%" tiene % unidades y ya hay % en otros meses: no caben % más',
+            v_descripcion, v_total, v_otros, NEW.cantidad
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_b_calendario_cuadra BEFORE INSERT OR UPDATE ON linea_calendario
+    FOR EACH ROW EXECUTE FUNCTION fn_calendario_cuadra();
+
+
+-- 10.4 Cuando el jefe cambia la cantidad de una línea, sus meses se
+--      ajustan solos si se puede: si toda la línea iba en un solo mes, la
+--      nueva cantidad también va en ese mes. Si iba repartida y la nueva
+--      cantidad no alcanza para lo repartido, el reparto se borra y el
+--      jefe lo vuelve a indicar (el presupuesto no se envía sin meses).
+--      Si sube y va repartida, lo nuevo queda sin mes.
+CREATE FUNCTION fn_ajustar_calendario() RETURNS trigger AS $$
+DECLARE
+    v_meses  integer;
+    v_suma   integer;
+BEGIN
+    SELECT count(*), COALESCE(sum(cantidad), 0) INTO v_meses, v_suma
+      FROM linea_calendario WHERE linea_id = NEW.id;
+
+    IF v_meses = 1 AND v_suma = OLD.cantidad THEN
+        UPDATE linea_calendario SET cantidad = NEW.cantidad WHERE linea_id = NEW.id;
+    ELSIF v_suma > NEW.cantidad THEN
+        DELETE FROM linea_calendario WHERE linea_id = NEW.id;
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_z_linea_ajusta_calendario AFTER UPDATE OF cantidad ON linea_presupuesto
+    FOR EACH ROW WHEN (NEW.cantidad IS DISTINCT FROM OLD.cantidad)
+    EXECUTE FUNCTION fn_ajustar_calendario();
+
+
+-- 10.5 Ciclo de vida del presupuesto de un departamento.
 --
 --        borrador ──► enviado ──► revision_contabilidad ──► aprobado
 --           ▲   jefe     │  Dirección      │        contabilidad
@@ -1060,11 +1218,15 @@ CREATE TRIGGER trg_b_editable_linea BEFORE INSERT OR UPDATE OR DELETE ON linea_p
 --                                    sin pasar por Dirección)
 --
 --      Quién hace cada paso lo exige la aplicación por rol; acá se
---      cuidan las transiciones, los comentarios y el monto congelado.
+--      cuidan las transiciones, los comentarios, los meses y el monto
+--      congelado.
 CREATE FUNCTION fn_transicion_presupuesto() RETURNS trigger AS $$
 DECLARE
-    v_lineas  integer;
-    v_total   bigint;
+    v_lineas    integer;
+    v_total     bigint;
+    v_sin_mes   integer;
+    v_nombres   text[];
+    v_lista     text;
 BEGIN
     IF NEW.estado = OLD.estado THEN
         IF OLD.estado = 'aprobado' AND NEW.monto_aprobado IS DISTINCT FROM OLD.monto_aprobado THEN
@@ -1096,6 +1258,26 @@ BEGIN
             RAISE EXCEPTION 'No se puede enviar un presupuesto sin ítems'
                 USING ERRCODE = 'check_violation';
         END IF;
+
+        -- Cada unidad de cada línea tiene que tener su mes.
+        SELECT count(*), (array_agg('"' || l.descripcion || '"' ORDER BY l.programa_id, l.id))[1:3]
+          INTO v_sin_mes, v_nombres
+          FROM vw_calendarizacion_linea c
+          JOIN linea_presupuesto l ON l.id = c.linea_id
+         WHERE c.presupuesto_id = NEW.id AND c.cantidad_sin_mes > 0;
+
+        IF v_sin_mes > 0 THEN
+            v_lista := CASE
+                WHEN v_sin_mes = 1 THEN v_nombres[1]
+                WHEN v_sin_mes <= 3 THEN array_to_string(v_nombres[1:v_sin_mes - 1], ', ')
+                                         || ' y ' || v_nombres[v_sin_mes]
+                ELSE array_to_string(v_nombres, ', ') || ' y '
+                     || CASE WHEN v_sin_mes = 4 THEN '1 ítem más' ELSE (v_sin_mes - 3) || ' ítems más' END
+            END;
+            RAISE EXCEPTION 'Antes de enviar, indica en qué meses usarás cada ítem. Faltan meses en %', v_lista
+                USING ERRCODE = 'check_violation';
+        END IF;
+
         NEW.enviado_en := now();
     END IF;
 
@@ -1189,7 +1371,8 @@ BEGIN
         PERFORM fn_notificar_rol(v_colegio, 'jefe_departamento', NEW.departamento_id,
             'Contabilidad aprobó el presupuesto ' || v_anio || ' de ' || v_depto,
             'Quedó fijo en ' || fn_pesos(NEW.monto_aprobado)
-                || ' y sus ítems entran a las órdenes de compra de cada periodo.', v_enlace);
+                || '. Durante ' || v_anio || ' pedirás desde aquí lo que necesites, con la fecha en que lo necesitas.',
+            v_enlace);
     END IF;
     RETURN NULL;
 END;
@@ -1199,18 +1382,28 @@ CREATE TRIGGER trg_z_avisa_presupuesto AFTER UPDATE OF estado ON presupuesto_dep
     FOR EACH ROW EXECUTE FUNCTION fn_avisar_presupuesto();
 
 
--- 10.4 Los ítems de una orden solo cambian en borrador, y el total de la
---      orden es siempre la suma de sus ítems.
+-- 10.6 Los ítems de un pedido solo cambian en borrador, una línea pedida
+--      tiene que ser del presupuesto del pedido, y el total del pedido es
+--      siempre la suma de sus ítems.
 CREATE FUNCTION fn_guardia_item_orden() RETURNS trigger AS $$
 DECLARE
-    v_estado  estado_orden;
+    v_estado       estado_orden;
+    v_presupuesto  integer;
 BEGIN
-    SELECT estado INTO v_estado
+    SELECT estado, presupuesto_id INTO v_estado, v_presupuesto
       FROM orden_compra WHERE id = COALESCE(NEW.orden_id, OLD.orden_id);
 
-    -- v_estado null: borrado en cascada de la orden completa.
+    -- v_estado null: borrado en cascada del pedido completo.
     IF v_estado IS NOT NULL AND v_estado <> 'borrador' THEN
-        RAISE EXCEPTION 'Los ítems de una orden solo se cambian mientras está en borrador'
+        RAISE EXCEPTION 'Los ítems de un pedido solo se cambian mientras está en borrador'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF TG_OP <> 'DELETE' AND NEW.linea_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM linea_presupuesto l JOIN programa p ON p.id = l.programa_id
+         WHERE l.id = NEW.linea_id AND p.presupuesto_id = v_presupuesto
+    ) THEN
+        RAISE EXCEPTION 'Ese ítem no es del presupuesto del pedido'
             USING ERRCODE = 'check_violation';
     END IF;
 
@@ -1242,43 +1435,57 @@ CREATE TRIGGER trg_z_item_recalcula_total AFTER INSERT OR UPDATE OR DELETE ON it
     FOR EACH ROW EXECUTE FUNCTION fn_recalcular_total_orden();
 
 
--- 10.5 La regla central de la ejecución. Cuando el jefe emite una orden
---      (borrador → emitida), la base decide: si cabe en el disponible del
---      departamento, queda emitida y pasa al equipo de compra; si no,
---      queda pendiente_direccion y se crea el pendiente de pedido.
---      La aplicación pide 'emitida' y lee con RETURNING cómo quedó.
+-- 10.7 La regla central de la ejecución. Cuando el jefe pide (borrador →
+--      emitida), la base revisa la fecha y decide: si cabe en el
+--      disponible del departamento, queda emitida y pasa al equipo de
+--      compra; si no, queda pendiente_direccion y se crea la solicitud
+--      a Dirección. La aplicación pide 'emitida' y lee con RETURNING
+--      cómo quedó.
+--
+--      Comprado y recibido no se marcan a mano: los marcan el registro de
+--      la compra y la confirmación de la recepción (10.9).
 CREATE FUNCTION fn_transicion_orden() RETURNS trigger AS $$
 DECLARE
-    v_etapa       etapa_anio;
-    v_estado_pres estado_presupuesto;
-    v_disponible  bigint;
-    v_resolucion  estado_pendiente;
+    v_anio          smallint;
+    v_etapa         etapa_anio;
+    v_estado_pres   estado_presupuesto;
+    v_anticipacion  smallint;
+    v_minima        date;
+    v_disponible    bigint;
+    v_resolucion    estado_pendiente;
 BEGIN
     IF NEW.estado = OLD.estado THEN
+        IF OLD.estado <> 'borrador' AND NEW.necesaria_para IS DISTINCT FROM OLD.necesaria_para THEN
+            RAISE EXCEPTION 'La fecha en que se necesita el pedido % se fija al pedirlo', NEW.folio
+                USING ERRCODE = 'check_violation';
+        END IF;
         RETURN NEW;
     END IF;
 
     IF NOT (
         (OLD.estado = 'borrador'            AND NEW.estado IN ('emitida', 'pendiente_direccion', 'anulada')) OR
-        (OLD.estado = 'pendiente_direccion' AND NEW.estado IN ('emitida', 'denegada')) OR
+        (OLD.estado = 'pendiente_direccion' AND NEW.estado IN ('emitida', 'denegada', 'anulada')) OR
         (OLD.estado = 'emitida'             AND NEW.estado IN ('comprada', 'anulada')) OR
         (OLD.estado = 'comprada'            AND NEW.estado = 'recibida')
     ) THEN
-        RAISE EXCEPTION 'Una orden no puede pasar de % a %', OLD.estado, NEW.estado
+        RAISE EXCEPTION 'Ese cambio no corresponde: el pedido % está % y no puede quedar %',
+            NEW.folio, fn_nombre_estado_orden(OLD.estado), fn_nombre_estado_orden(NEW.estado)
             USING ERRCODE = 'check_violation';
     END IF;
 
     IF OLD.estado = 'borrador' AND NEW.estado IN ('emitida', 'pendiente_direccion') THEN
-        -- Bloquea el presupuesto del departamento: dos emisiones
-        -- simultáneas no pueden gastarse el mismo disponible.
-        SELECT ap.etapa, pd.estado INTO v_etapa, v_estado_pres
+        -- Bloquea el presupuesto del departamento: dos pedidos simultáneos
+        -- no pueden gastarse el mismo disponible.
+        SELECT ap.anio, ap.etapa, pd.estado, c.anticipacion_dias
+          INTO v_anio, v_etapa, v_estado_pres, v_anticipacion
           FROM presupuesto_departamento pd
           JOIN anio_presupuestario ap ON ap.id = pd.anio_id
+          JOIN colegio             c  ON c.id  = ap.colegio_id
          WHERE pd.id = NEW.presupuesto_id
            FOR UPDATE OF pd;
 
         IF v_etapa <> 'ejecucion' THEN
-            RAISE EXCEPTION 'Solo se emiten órdenes en un año en ejecución'
+            RAISE EXCEPTION 'Solo se pide contra un presupuesto en ejecución: el de % todavía no empieza', v_anio
                 USING ERRCODE = 'check_violation';
         END IF;
         IF v_estado_pres <> 'aprobado' THEN
@@ -1286,7 +1493,20 @@ BEGIN
                 USING ERRCODE = 'check_violation';
         END IF;
         IF NEW.monto_presupuesto = 0 THEN
-            RAISE EXCEPTION 'La orden % no tiene ítems', NEW.folio
+            RAISE EXCEPTION 'El pedido % no tiene ítems', NEW.folio
+                USING ERRCODE = 'check_violation';
+        END IF;
+
+        -- La fecha: con anticipación, y dentro del año del presupuesto.
+        v_minima := (NEW.creado_en AT TIME ZONE 'America/Santiago')::date + v_anticipacion;
+        IF NEW.necesaria_para < v_minima THEN
+            RAISE EXCEPTION 'Hay que pedir con al menos % de anticipación: la fecha más próxima que puedes poner es el %',
+                CASE WHEN v_anticipacion = 1 THEN '1 día' ELSE v_anticipacion || ' días' END,
+                to_char(v_minima, 'DD-MM-YYYY')
+                USING ERRCODE = 'check_violation';
+        END IF;
+        IF extract(year FROM NEW.necesaria_para) <> v_anio THEN
+            RAISE EXCEPTION 'El pedido es del presupuesto %: la fecha en que se necesita tiene que ser de ese año', v_anio
                 USING ERRCODE = 'check_violation';
         END IF;
 
@@ -1297,12 +1517,12 @@ BEGIN
                            THEN 'emitida' ELSE 'pendiente_direccion' END;
         NEW.fecha_emision := now();
 
-    ELSIF OLD.estado = 'pendiente_direccion' THEN
-        -- Solo la resolución de Dirección mueve una orden pendiente.
+    ELSIF OLD.estado = 'pendiente_direccion' AND NEW.estado IN ('emitida', 'denegada') THEN
+        -- Solo la resolución de Dirección mueve un pedido que la espera.
         SELECT estado INTO v_resolucion FROM pendiente_pedido WHERE orden_id = NEW.id;
         IF v_resolucion IS DISTINCT FROM
            (CASE NEW.estado WHEN 'emitida' THEN 'aprobado' ELSE 'denegado' END)::estado_pendiente THEN
-            RAISE EXCEPTION 'La orden % espera la resolución de Dirección', NEW.folio
+            RAISE EXCEPTION 'El pedido % espera la resolución de Dirección', NEW.folio
                 USING ERRCODE = 'check_violation';
         END IF;
 
@@ -1310,11 +1530,19 @@ BEGIN
             SELECT disponible INTO v_disponible
               FROM vw_saldo_departamento WHERE presupuesto_id = NEW.presupuesto_id;
             IF NEW.monto_presupuesto > v_disponible THEN
-                RAISE EXCEPTION 'La orden % todavía no cabe en el disponible del departamento', NEW.folio
+                RAISE EXCEPTION 'El pedido % todavía no cabe en el disponible del departamento', NEW.folio
                     USING ERRCODE = 'check_violation';
             END IF;
             NEW.fecha_emision := now();
         END IF;
+
+    ELSIF NEW.estado = 'comprada' AND NOT EXISTS (SELECT 1 FROM compra WHERE orden_id = NEW.id) THEN
+        RAISE EXCEPTION 'Para marcar comprado el pedido %, registra la compra con lo que se pagó', NEW.folio
+            USING ERRCODE = 'check_violation';
+
+    ELSIF NEW.estado = 'recibida' AND NOT EXISTS (SELECT 1 FROM recepcion WHERE orden_id = NEW.id) THEN
+        RAISE EXCEPTION 'Para marcar recibido el pedido %, confirma la recepción', NEW.folio
+            USING ERRCODE = 'check_violation';
     END IF;
 
     NEW.actualizado_en := now();
@@ -1326,12 +1554,12 @@ CREATE TRIGGER trg_b_transicion_orden BEFORE UPDATE ON orden_compra
     FOR EACH ROW EXECUTE FUNCTION fn_transicion_orden();
 
 
--- Una orden nace en borrador: los ítems se cargan después y recién ahí
--- se emite, que es cuando corre la validación de saldo.
+-- Un pedido nace en borrador: los ítems se cargan después y recién ahí
+-- se pide, que es cuando corren las reglas de la fecha y del saldo.
 CREATE FUNCTION fn_orden_nace_en_borrador() RETURNS trigger AS $$
 BEGIN
     IF NEW.estado <> 'borrador' THEN
-        RAISE EXCEPTION 'Una orden se crea en borrador; se emite después de cargar sus ítems'
+        RAISE EXCEPTION 'Un pedido se crea en borrador; se pide después de cargar sus ítems'
             USING ERRCODE = 'check_violation';
     END IF;
     RETURN NEW;
@@ -1342,13 +1570,20 @@ CREATE TRIGGER trg_b_orden_nace_en_borrador BEFORE INSERT ON orden_compra
     FOR EACH ROW EXECUTE FUNCTION fn_orden_nace_en_borrador();
 
 
+-- 10.8 Lo que pasa después de cada cambio de estado de un pedido: la
+--      solicitud a Dirección cuando no cabe, y los avisos a quien tiene
+--      que hacer algo.
 CREATE FUNCTION fn_efectos_orden() RETURNS trigger AS $$
 DECLARE
     v_colegio     integer;
     v_depto_id    integer;
     v_depto       text;
     v_disponible  bigint;
+    v_detalle     text;
+    v_fecha       text := to_char(NEW.necesaria_para, 'DD-MM-YYYY');
+    v_enlace      text;
     v_explicacion text;
+    v_extension   integer;
 BEGIN
     IF NEW.estado = OLD.estado THEN
         RETURN NULL;
@@ -1359,9 +1594,13 @@ BEGIN
       JOIN departamento d ON d.id = pd.departamento_id
      WHERE pd.id = NEW.presupuesto_id;
 
+    v_enlace := '/ejecucion/' || v_depto_id;
+    SELECT string_agg(descripcion || ' × ' || cantidad, ', ' ORDER BY id) INTO v_detalle
+      FROM item_orden WHERE orden_id = NEW.id;
+
     IF NEW.estado = 'pendiente_direccion' THEN
-        -- Las órdenes pendientes no tocan el saldo, así que el disponible
-        -- sigue siendo el mismo que vio la emisión.
+        -- Los pedidos que esperan no tocan el saldo, así que el disponible
+        -- sigue siendo el mismo que se revisó al pedir.
         SELECT disponible INTO v_disponible
           FROM vw_saldo_departamento WHERE presupuesto_id = NEW.presupuesto_id;
 
@@ -1369,22 +1608,52 @@ BEGIN
         VALUES (NEW.id, NEW.monto_presupuesto - v_disponible, v_disponible);
 
         PERFORM fn_notificar_rol(v_colegio, 'direccion', NULL,
-            'Pendiente de pedido de ' || v_depto || ': orden ' || NEW.folio,
-            'La orden excede el disponible del departamento en '
-                || fn_pesos(NEW.monto_presupuesto - v_disponible),
-            '/pendientes');
+            v_depto || ' pide extender su presupuesto en ' || fn_pesos(NEW.monto_presupuesto - v_disponible),
+            'Pedido ' || NEW.folio || ': ' || v_detalle || ', para el ' || v_fecha || '.',
+            '/solicitudes');
 
     ELSIF NEW.estado = 'emitida' THEN
         PERFORM fn_notificar_rol(v_colegio, 'equipo_compra', NULL,
-            'Orden ' || NEW.folio || ' de ' || v_depto || ' lista para comprar',
-            NULL, '/compras');
+            'Pedido ' || NEW.folio || ' de ' || v_depto || ' listo para comprar',
+            v_detalle || '. Se necesita el ' || v_fecha || '.',
+            '/compras');
+
+        IF OLD.estado = 'pendiente_direccion' THEN
+            SELECT m.monto INTO v_extension
+              FROM modificacion_presupuestaria m
+              JOIN pendiente_pedido p ON p.id = m.pendiente_id
+             WHERE p.orden_id = NEW.id;
+            PERFORM fn_notificar_rol(v_colegio, 'jefe_departamento', v_depto_id,
+                'Dirección aprobó tu pedido ' || NEW.folio,
+                CASE WHEN v_extension IS NULL THEN 'El pedido pasó a compra.'
+                     ELSE 'Extendió tu presupuesto en ' || fn_pesos(v_extension) || ' y el pedido pasó a compra.' END,
+                v_enlace);
+        END IF;
 
     ELSIF NEW.estado = 'denegada' THEN
         SELECT explicacion INTO v_explicacion FROM pendiente_pedido WHERE orden_id = NEW.id;
-        INSERT INTO notificacion (usuario_id, titulo, mensaje, enlace)
-        VALUES (NEW.emitida_por,
-                'Dirección denegó la orden ' || NEW.folio,
-                v_explicacion, '/ordenes');
+        PERFORM fn_notificar_rol(v_colegio, 'jefe_departamento', v_depto_id,
+            'Dirección denegó tu pedido ' || NEW.folio, v_explicacion, v_enlace);
+
+    ELSIF NEW.estado = 'comprada' THEN
+        PERFORM fn_notificar_rol(v_colegio, 'jefe_departamento', v_depto_id,
+            'Se compró tu pedido ' || NEW.folio,
+            v_detalle || '. Cuando llegue, confirma que lo recibiste.', v_enlace);
+
+    ELSIF NEW.estado = 'anulada' AND OLD.estado = 'emitida' THEN
+        PERFORM fn_notificar_rol(v_colegio, 'equipo_compra', NULL,
+            v_depto || ' anuló el pedido ' || NEW.folio,
+            v_detalle || '. Ya no hay que comprarlo.', '/compras');
+
+    ELSIF NEW.estado = 'anulada' AND OLD.estado = 'pendiente_direccion' THEN
+        UPDATE pendiente_pedido
+           SET estado = 'retirado',
+               resuelto_por = COALESCE(fn_usuario_actual(), NEW.emitida_por),
+               resuelto_en = now()
+         WHERE orden_id = NEW.id AND estado = 'pendiente';
+        PERFORM fn_notificar_rol(v_colegio, 'direccion', NULL,
+            v_depto || ' retiró su pedido ' || NEW.folio,
+            'Ya no hay que resolver esa solicitud.', '/solicitudes');
     END IF;
 
     RETURN NULL;
@@ -1395,18 +1664,23 @@ CREATE TRIGGER trg_z_efectos_orden AFTER UPDATE OF estado ON orden_compra
     FOR EACH ROW EXECUTE FUNCTION fn_efectos_orden();
 
 
--- 10.6 Compras y recepciones, solo sobre órdenes que ya salieron.
+-- 10.9 Compras y recepciones. Una compra se registra sobre un pedido por
+--      comprar (o uno ya comprado, si llega en partes) y lo marca
+--      comprado; una recepción, sobre uno comprado, y lo marca recibido.
 CREATE FUNCTION fn_guardia_compra() RETURNS trigger AS $$
 DECLARE
     v_estado estado_orden;
+    v_folio  text;
 BEGIN
-    SELECT estado INTO v_estado FROM orden_compra WHERE id = NEW.orden_id;
+    SELECT estado, folio INTO v_estado, v_folio FROM orden_compra WHERE id = NEW.orden_id;
 
     IF TG_TABLE_NAME = 'compra' AND v_estado NOT IN ('emitida', 'comprada', 'recibida') THEN
-        RAISE EXCEPTION 'Solo se registran compras de órdenes emitidas'
+        RAISE EXCEPTION 'El pedido % está %: solo se registran compras de pedidos por comprar',
+            v_folio, fn_nombre_estado_orden(v_estado)
             USING ERRCODE = 'check_violation';
     ELSIF TG_TABLE_NAME = 'recepcion' AND v_estado NOT IN ('comprada', 'recibida') THEN
-        RAISE EXCEPTION 'Solo se recepcionan órdenes ya compradas'
+        RAISE EXCEPTION 'El pedido % está %: solo se recibe lo que ya se compró',
+            v_folio, fn_nombre_estado_orden(v_estado)
             USING ERRCODE = 'check_violation';
     END IF;
     RETURN NEW;
@@ -1419,8 +1693,27 @@ CREATE TRIGGER trg_b_guardia_recepcion BEFORE INSERT OR UPDATE ON recepcion
     FOR EACH ROW EXECUTE FUNCTION fn_guardia_compra();
 
 
--- 10.7 Bitácora automática. Trabaja sobre jsonb para que la misma
---      función sirva para cualquier tabla, tenga o no columna estado.
+CREATE FUNCTION fn_marcar_orden() RETURNS trigger AS $$
+BEGIN
+    IF TG_TABLE_NAME = 'compra' THEN
+        UPDATE orden_compra SET estado = 'comprada' WHERE id = NEW.orden_id AND estado = 'emitida';
+    ELSE
+        UPDATE orden_compra SET estado = 'recibida' WHERE id = NEW.orden_id AND estado = 'comprada';
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_z_compra_marca_orden AFTER INSERT ON compra
+    FOR EACH ROW EXECUTE FUNCTION fn_marcar_orden();
+CREATE TRIGGER trg_z_recepcion_marca_orden AFTER INSERT ON recepcion
+    FOR EACH ROW EXECUTE FUNCTION fn_marcar_orden();
+
+
+-- 10.10 Bitácora automática. Trabaja sobre jsonb para que la misma
+--       función sirva para cualquier tabla, tenga o no columna estado.
+--       Los meses de las líneas no van: se reescriben enteros cada vez
+--       que el jefe guarda la grilla.
 CREATE FUNCTION fn_bitacora() RETURNS trigger AS $$
 DECLARE
     v_antes    jsonb := CASE WHEN TG_OP <> 'INSERT' THEN to_jsonb(OLD) END;
@@ -1457,13 +1750,13 @@ CREATE TRIGGER trg_z_bitacora AFTER INSERT OR UPDATE OR DELETE ON linea_presupue
     FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
 CREATE TRIGGER trg_z_bitacora AFTER INSERT OR UPDATE OR DELETE ON modificacion_presupuestaria
     FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
-CREATE TRIGGER trg_z_bitacora AFTER INSERT OR UPDATE OR DELETE ON solicitud_compra
-    FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
 CREATE TRIGGER trg_z_bitacora AFTER INSERT OR UPDATE OR DELETE ON orden_compra
     FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
 CREATE TRIGGER trg_z_bitacora AFTER INSERT OR UPDATE OR DELETE ON pendiente_pedido
     FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
 CREATE TRIGGER trg_z_bitacora AFTER INSERT OR UPDATE OR DELETE ON compra
+    FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
+CREATE TRIGGER trg_z_bitacora AFTER INSERT OR UPDATE OR DELETE ON recepcion
     FOR EACH ROW EXECUTE FUNCTION fn_bitacora();
 
 
@@ -1471,10 +1764,10 @@ CREATE TRIGGER trg_z_bitacora AFTER INSERT OR UPDATE OR DELETE ON compra
 -- 11. Operaciones de Dirección
 -- ---------------------------------------------------------------------
 
--- Resolver un pendiente de pedido. Aprobar aumenta el presupuesto del
--- departamento en lo que falte en este momento (no en lo que faltaba al
--- emitir: entremedio pudo liberarse o gastarse plata) y emite la orden.
--- Denegar exige explicación, que le llega al jefe como aviso.
+-- Resolver una solicitud para extender el presupuesto. Aprobar aumenta el
+-- presupuesto del departamento en lo que falte en este momento (no en lo
+-- que faltaba al pedir: entremedio pudo liberarse o gastarse plata) y el
+-- pedido pasa a compra. Denegar exige explicación, que le llega al jefe.
 CREATE FUNCTION fn_resolver_pendiente(
     p_pendiente_id  integer,
     p_aprobar       boolean,
@@ -1493,10 +1786,14 @@ BEGIN
 
     SELECT * INTO v_pendiente FROM pendiente_pedido WHERE id = p_pendiente_id FOR UPDATE;
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'No existe el pendiente de pedido %', p_pendiente_id;
+        RAISE EXCEPTION 'No existe la solicitud %', p_pendiente_id;
+    END IF;
+    IF v_pendiente.estado = 'retirado' THEN
+        RAISE EXCEPTION 'El jefe de departamento retiró ese pedido: ya no hay nada que resolver'
+            USING ERRCODE = 'check_violation';
     END IF;
     IF v_pendiente.estado <> 'pendiente' THEN
-        RAISE EXCEPTION 'Ese pendiente de pedido ya fue resuelto'
+        RAISE EXCEPTION 'Esa solicitud ya fue resuelta'
             USING ERRCODE = 'check_violation';
     END IF;
 
@@ -1518,7 +1815,7 @@ BEGIN
                 (presupuesto_id, monto, motivo, pendiente_id, autorizado_por)
             VALUES
                 (v_orden.presupuesto_id, v_faltante::integer,
-                 'Pendiente de pedido aprobado: orden ' || v_orden.folio,
+                 'Extensión aprobada por Dirección: pedido ' || v_orden.folio,
                  p_pendiente_id, v_usuario);
         END IF;
 

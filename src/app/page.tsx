@@ -5,23 +5,20 @@ import { TarjetaCifra } from '@/components/tarjeta-cifra';
 import { EstadoPresupuestoPildora } from '@/components/pildoras';
 import { Pasos } from '@/components/pasos';
 import { ResumenFormulacion } from '@/components/resumen-formulacion';
-import { IconoAlerta, IconoDescarga, IconoFlecha } from '@/components/iconos';
-import { ayuda, boton, tarjeta, td, tdNum, th, titulo, tituloPagina } from '@/components/ui';
-import { esContabilidad, esDireccion, getSesion, type Sesion } from '@/lib/sesion';
+import { IconoAlerta, IconoCalendario, IconoDescarga, IconoFlecha, IconoOk, IconoReloj } from '@/components/iconos';
+import { ayuda, boton, tarjeta, titulo, tituloPagina } from '@/components/ui';
 import {
-  notificacionesRecientes, pendientesDeDireccion, saldosEjecucion, totalizar, type SaldoDepartamento,
-} from '@/lib/consultas';
+  esContabilidad, esDireccion, esEquipoCompra, getSesion, veEjecucionColegio, veGastoReal, type Sesion,
+} from '@/lib/sesion';
+import { notificacionesRecientes, saldosEjecucion, totalizar, type SaldoDepartamento } from '@/lib/consultas';
 import {
-  montosPorPeriodo, resumenFormulacion, resumenOrdenes,
-  type EstadoPresupuesto, type FilaPeriodos, type PorPeriodo, type ResumenPresupuesto,
+  proyeccionColegio, resumenFormulacion, type EstadoPresupuesto, type FilaProyeccion, type ResumenPresupuesto,
 } from '@/lib/formulacion';
+import { pedidos, solicitudesPendientes, type Pedido, type Solicitud } from '@/lib/ejecucion';
 import { esperaRevision, pasosDe, ultimaNovedad } from '@/lib/etapas';
-import { PERIODOS } from '@/lib/periodos';
-import { fecha, money, pct, plural, primerNombre } from '@/lib/formato';
-
-// Las rutas que ya existen. Los avisos que apuntan a pantallas de la
-// etapa 2 (todavía en construcción) se muestran sin enlace.
-const RUTAS_ACTIVAS = ['/formulacion', '/catalogo', '/ordenes-de-compra'];
+import {
+  conSigno, diasEntre, fecha, fechaCorta, hoyEnChile, money, pct, plazo, plural, primerNombre,
+} from '@/lib/formato';
 
 type Revisores = { direccion: boolean; contabilidad: boolean };
 
@@ -29,28 +26,30 @@ export default async function Inicio() {
   const sesion = await getSesion();
   if (!sesion) return <SinDatos />;
 
-  const departamentosPropios = sesion.veTodoElColegio
-    ? undefined
-    : [...new Set([sesion.jefeDe?.id, ...sesion.profesorEn.map((d) => d.id)].filter((x): x is number => !!x))];
-
   const anioF = sesion.anioFormulacion;
+  const anioE = sesion.anioEjecucion;
   const revisores: Revisores = { direccion: esDireccion(sesion), contabilidad: esContabilidad(sesion) };
-  const [saldos, formulacion, avisos, pendientes, ordenes] = await Promise.all([
-    sesion.anioEjecucion
-      ? saldosEjecucion(sesion.colegio.id, sesion.anioEjecucion.id, departamentosPropios)
-      : Promise.resolve([]),
+  const compras = esEquipoCompra(sesion);
+  const jefe = sesion.jefeDe;
+
+  const [formulacion, avisos, proyeccion, solicitudes, saldos, misPedidos, porComprar] = await Promise.all([
     anioF ? resumenFormulacion(sesion.colegio.id, anioF.id) : Promise.resolve([]),
     notificacionesRecientes(sesion.usuario.id),
-    revisores.direccion ? pendientesDeDireccion(sesion.colegio.id) : Promise.resolve([]),
-    anioF && revisores.contabilidad ? resumenOrdenes(sesion.colegio.id, anioF.id) : Promise.resolve(null),
+    anioF && revisores.contabilidad ? proyeccionColegio(sesion.colegio.id, anioF.id) : Promise.resolve(null),
+    anioE && revisores.direccion ? solicitudesPendientes(sesion.colegio.id, anioE.id) : Promise.resolve([]),
+    anioE && (veEjecucionColegio(sesion) || jefe)
+      ? saldosEjecucion(sesion.colegio.id, anioE.id, veEjecucionColegio(sesion) ? undefined : [jefe!.id])
+      : Promise.resolve([]),
+    anioE && jefe
+      ? pedidos({ colegioId: sesion.colegio.id, anioId: anioE.id, departamentoId: jefe.id, estados: ['pendiente_direccion', 'emitida', 'comprada'] })
+      : Promise.resolve([]),
+    anioE && compras
+      ? pedidos({ colegioId: sesion.colegio.id, anioId: anioE.id, estados: ['emitida'], orden: 'urgente' })
+      : Promise.resolve([]),
   ]);
 
-  const miFormulacion = sesion.jefeDe ? formulacion.find((f) => f.departamentoId === sesion.jefeDe!.id) : undefined;
-  const misPeriodos: PorPeriodo = miFormulacion?.presupuestoId
-    ? await montosPorPeriodo(miFormulacion.presupuestoId)
-    : [0, 0, 0];
-
-  const soloProfesor = !sesion.jefeDe && !sesion.veTodoElColegio;
+  const miFormulacion = jefe ? formulacion.find((f) => f.departamentoId === jefe.id) : undefined;
+  const miSaldo = jefe ? saldos.find((s) => s.departamentoId === jefe.id) : undefined;
 
   return (
     <>
@@ -58,37 +57,36 @@ export default async function Inicio() {
       <main className="mx-auto max-w-6xl space-y-10 px-5 pb-24 pt-8">
         <div>
           <h1 className={tituloPagina}>Hola, {primerNombre(sesion.usuario.nombre)}</h1>
-          <p className="mt-1 text-[17px] text-ink-2">
-            {rolVisible(sesion)} · {sesion.colegio.nombre}
-            {soloProfesor && sesion.profesorEn.length > 0 && ` · clases en ${sesion.profesorEn.map((d) => d.nombre).join(' y ')}`}
-          </p>
+          <p className="mt-1 text-[17px] text-ink-2">{rolVisible(sesion)} · {sesion.colegio.nombre}</p>
         </div>
 
-        {sesion.jefeDe && miFormulacion && anioF && (
-          <MiPresupuesto resumen={miFormulacion} anio={anioF.anio} porPeriodo={misPeriodos} />
+        {jefe && miFormulacion && anioF && <MiPresupuesto resumen={miFormulacion} anio={anioF.anio} />}
+
+        {jefe && anioE && miSaldo && (
+          <MisPedidos departamentoId={jefe.id} anio={anioE.anio} saldo={miSaldo} enCurso={misPedidos} />
         )}
+
+        {compras && anioE && <PorComprar anio={anioE.anio} lista={porComprar} />}
+
+        {revisores.direccion && anioE && <Solicitudes lista={solicitudes} />}
 
         {(revisores.direccion || revisores.contabilidad) && anioF && (
           <ParaRevisar filas={formulacion.filter((f) => esperaRevision(f, revisores))} revisores={revisores} />
         )}
 
-        {ordenes && anioF && (
-          <TarjetaOrdenes anio={anioF.anio} filas={ordenes} departamentos={formulacion.length} />
+        {proyeccion && anioF && (
+          <TarjetaProyeccion anio={anioF.anio} filas={proyeccion} departamentos={formulacion.length} />
         )}
 
-        {sesion.veTodoElColegio && anioF && formulacion.length > 0 && (
+        {(revisores.direccion || revisores.contabilidad) && anioF && formulacion.length > 0 && (
           <EstadoFormulacion filas={formulacion} anio={anioF.anio} />
         )}
 
-        {pendientes.length > 0 && <PendientesDireccion pendientes={pendientes} />}
+        {veEjecucionColegio(sesion) && anioE && <Ejecucion sesion={sesion} saldos={saldos} anio={anioE.anio} />}
 
-        {sesion.anioEjecucion && (
-          <Ejecucion sesion={sesion} saldos={saldos} anio={sesion.anioEjecucion.anio} />
-        )}
-
-        {soloProfesor && (
+        {!sesion.rol && (
           <p className={`${tarjeta} px-6 py-5 text-ink-2`}>
-            Pronto podrás pedir materiales desde aquí: la solicitud llegará a tu jefe de departamento.
+            Todavía no tienes un rol asignado. Pídele al administrador del sistema que te lo asigne.
           </p>
         )}
 
@@ -97,7 +95,6 @@ export default async function Inicio() {
           <div className={`${tarjeta} divide-y divide-line`}>
             {avisos.length === 0 && <p className="px-6 py-8 text-center text-ink-2">No tienes avisos.</p>}
             {avisos.map((a) => {
-              const activo = a.enlace && RUTAS_ACTIVAS.some((r) => a.enlace!.startsWith(r));
               const contenido = (
                 <>
                   <p className="font-semibold text-ink">{a.titulo}</p>
@@ -105,8 +102,8 @@ export default async function Inicio() {
                   <p className="mt-1 text-sm text-ink-2">{fecha(a.creadaEn)}</p>
                 </>
               );
-              return activo ? (
-                <Link key={a.id} href={a.enlace!} className="flex items-center gap-4 px-6 py-4 hover:bg-surface-2">
+              return a.enlace ? (
+                <Link key={a.id} href={a.enlace} className="flex items-center gap-4 px-6 py-4 hover:bg-surface-2">
                   <span className="min-w-0 flex-1">{contenido}</span>
                   <IconoFlecha className="size-5 shrink-0 text-accent" />
                 </Link>
@@ -122,22 +119,25 @@ export default async function Inicio() {
 }
 
 // ---------------------------------------------------------------------
-// Jefe de departamento: su presupuesto y qué hacer ahora
+// Jefe de departamento: su presupuesto del próximo año y sus pedidos
 // ---------------------------------------------------------------------
 
-function MiPresupuesto({
-  resumen: r, anio, porPeriodo,
-}: { resumen: ResumenPresupuesto; anio: number; porPeriodo: PorPeriodo }) {
+function MiPresupuesto({ resumen: r, anio }: { resumen: ResumenPresupuesto; anio: number }) {
   const e = r.estado;
   const reenviado = e === 'revision_contabilidad' && r.comentarioContabilidad !== null;
+  const faltanMeses = r.lineasSinMes > 0 && (e === 'borrador' || e === 'devuelto' || e === 'con_reparos');
 
   const ahora: Record<EstadoPresupuesto | 'sin_iniciar', { texto: string; boton: string }> = {
     sin_iniciar: {
-      texto: 'Empieza eligiendo un periodo y creando los programas que tu departamento hará el próximo año.',
+      texto: 'Empieza creando los programas que tu departamento hará el próximo año.',
       boton: 'Empezar mi presupuesto',
     },
     borrador: {
-      texto: 'Sigue agregando lo que necesitas en cada periodo y, cuando termines, envíalo a Dirección.',
+      texto: r.lineas === 0
+        ? 'Agrega lo que necesitas a tus programas.'
+        : faltanMeses
+          ? 'Indica en qué meses usarás cada ítem y, cuando termines, envíalo a Dirección.'
+          : 'Todos tus ítems tienen sus meses: cuando termines, envíalo a Dirección.',
       boton: 'Seguir con mi presupuesto',
     },
     devuelto: { texto: 'Dirección te lo devolvió con un comentario: ajústalo y vuelve a enviarlo.', boton: 'Ver lo que pidió Dirección' },
@@ -153,12 +153,13 @@ function MiPresupuesto({
       boton: 'Ver los reparos',
     },
     aprobado: {
-      texto: 'Está aprobado y sus ítems entran a las órdenes de compra de cada periodo. No tienes nada pendiente.',
+      texto: `Está aprobado, con sus meses. Durante ${anio} pedirás desde aquí lo que necesites. No tienes nada pendiente.`,
       boton: 'Ver mi presupuesto',
     },
   };
   const paso = ahora[e ?? 'sin_iniciar'];
   const comentario = e === 'devuelto' ? r.comentarioDireccion : e === 'con_reparos' ? r.comentarioContabilidad : null;
+  const armando = e === null || e === 'borrador' || e === 'devuelto';
 
   return (
     <section aria-labelledby="mi-presupuesto" className={`${tarjeta} p-6`}>
@@ -172,8 +173,16 @@ function MiPresupuesto({
           {comentario && (
             <blockquote className="mt-2 border-l-4 border-warn/50 pl-4 text-ink-2">“{comentario}”</blockquote>
           )}
-          {e !== 'aprobado' && r.formulacionHasta && (
-            <p className={`${ayuda} mt-2`}>La formulación cierra el {fecha(r.formulacionHasta)}.</p>
+          {faltanMeses && r.lineas > 0 && (
+            <p className="mt-2 flex items-center gap-1.5 text-[15px] font-medium text-warn">
+              <IconoCalendario className="size-4" />
+              {r.lineasSinMes === 1 ? 'A 1 ítem le faltan sus meses' : `A ${r.lineasSinMes} ítems les faltan sus meses`}
+            </p>
+          )}
+          {e !== 'aprobado' && (armando ? r.formulacionHasta : r.aprobacionHasta) && (
+            <p className={`${ayuda} mt-2`}>
+              {armando ? `Se arma hasta el ${fecha(r.formulacionHasta)}.` : `Se aprueba hasta el ${fecha(r.aprobacionHasta)}.`}
+            </p>
           )}
         </div>
         <div className="text-right">
@@ -182,24 +191,108 @@ function MiPresupuesto({
         </div>
       </div>
 
-      {e && (
-        <ul className="mt-4 flex flex-wrap gap-x-6 gap-y-1 text-[15px]" aria-label="Total de cada periodo">
-          {PERIODOS.map((p) => (
-            <li key={p.numero}>
-              <span className="text-ink-2">{p.nombre} ({p.meses}):</span>{' '}
-              <b className="font-semibold">{money(porPeriodo[p.numero - 1])}</b>
-            </li>
-          ))}
-        </ul>
-      )}
-
       <div className="mt-5">
         <Pasos pasos={pasosDe(r)} />
       </div>
 
-      <Link href={`/formulacion/${r.departamentoId}`} className={`${boton.primario} mt-5`}>
-        {paso.boton}<IconoFlecha className="size-4" />
-      </Link>
+      <div className="mt-5 flex flex-wrap gap-2">
+        <Link href={`/formulacion/${r.departamentoId}`} className={boton.primario}>
+          {paso.boton}<IconoFlecha className="size-4" />
+        </Link>
+        {faltanMeses && r.lineas > 0 && (
+          <Link href={`/formulacion/${r.departamentoId}/meses`} className={boton.secundario}>
+            <IconoCalendario className="size-4" />Indicar los meses
+          </Link>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function MisPedidos({
+  departamentoId, anio, saldo: s, enCurso,
+}: { departamentoId: number; anio: number; saldo: SaldoDepartamento; enCurso: Pedido[] }) {
+  const cuenta = (estado: Pedido['estado']) => enCurso.filter((p) => p.estado === estado).length;
+  const comprados = cuenta('comprada');
+  const enlace = `/ejecucion/${departamentoId}`;
+
+  return (
+    <section aria-labelledby="mis-pedidos" className={`${tarjeta} p-6`}>
+      <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
+        <div className="min-w-[15rem] flex-1">
+          <h2 id="mis-pedidos" className={titulo}>Tus pedidos {anio}</h2>
+          <p className="mt-1 text-[17px] text-ink">
+            Pide lo que necesitas al lado de cada ítem de tu presupuesto, con la fecha en que lo necesitas.
+          </p>
+        </div>
+        <div className="text-right">
+          <p className="text-sm font-medium text-ink-2">Te queda</p>
+          <p className={`text-2xl font-semibold ${s.disponible < 0 ? 'text-bad' : ''}`}>{money(s.disponible)}</p>
+          <p className="text-sm text-ink-2">de {money(s.vigente)}</p>
+        </div>
+      </div>
+
+      <div className="mt-4 max-w-xl"><BarraSaldo {...s} /><Leyenda /></div>
+
+      <ul className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-[15px]" aria-label="Tus pedidos en curso">
+        <li className="flex items-center gap-1.5"><IconoReloj className="size-4 text-accent" />{plural(cuenta('emitida'), 'por comprar', 'por comprar')}</li>
+        {cuenta('pendiente_direccion') > 0 && (
+          <li className="flex items-center gap-1.5 text-warn"><IconoAlerta className="size-4" />{plural(cuenta('pendiente_direccion'), 'esperando a Dirección', 'esperando a Dirección')}</li>
+        )}
+        {comprados > 0 && (
+          <li className="flex items-center gap-1.5 font-semibold text-accent-ink">
+            <IconoOk className="size-4" />{comprados === 1 ? '1 comprado: confirma cuando llegue' : `${comprados} comprados: confirma cuando lleguen`}
+          </li>
+        )}
+      </ul>
+
+      <div className="mt-5 flex flex-wrap gap-2">
+        <Link href={enlace} className={boton.primario}>Hacer un pedido<IconoFlecha className="size-4" /></Link>
+        {comprados > 0 && <Link href={`${enlace}#mis-pedidos`} className={boton.secundario}>Confirmar lo que llegó</Link>}
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------
+// Equipo de compra
+// ---------------------------------------------------------------------
+
+function PorComprar({ anio, lista }: { anio: number; lista: Pedido[] }) {
+  const hoy = hoyEnChile();
+  const primeros = lista.slice(0, 5);
+  return (
+    <section aria-labelledby="por-comprar" className={`${tarjeta} p-6`}>
+      <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
+        <div className="min-w-[15rem] flex-1">
+          <h2 id="por-comprar" className={titulo}>Por comprar</h2>
+          <p className="mt-1 text-[17px] text-ink">
+            {lista.length === 0
+              ? `No hay órdenes de compra ${anio} pendientes.`
+              : `${plural(lista.length, 'orden de compra', 'órdenes de compra')} por ${money(lista.reduce((s, p) => s + p.monto, 0))}. Primero lo que se necesita antes.`}
+          </p>
+        </div>
+        <Link href="/compras" className={boton.primario}>Ir a compras<IconoFlecha className="size-4" /></Link>
+      </div>
+      {primeros.length > 0 && (
+        <ul className="mt-4 divide-y divide-line rounded-xl border border-line">
+          {primeros.map((p) => {
+            const n = diasEntre(hoy, p.necesariaPara);
+            return (
+              <li key={p.ordenId} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3">
+                <span className="w-20 shrink-0 font-semibold">{fechaCorta(p.necesariaPara)}</span>
+                <span className="min-w-[12rem] flex-1">
+                  <span className="block font-medium">{p.detalle}</span>
+                  <span className="block text-sm text-ink-2">{p.departamento}</span>
+                </span>
+                <span className={`flex items-center gap-1 text-sm ${n < 0 ? 'font-semibold text-bad' : n <= 3 ? 'font-semibold text-warn' : 'text-ink-2'}`}>
+                  {n <= 3 && <IconoReloj className="size-4" />}{plazo(hoy, p.necesariaPara)}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </section>
   );
 }
@@ -207,6 +300,32 @@ function MiPresupuesto({
 // ---------------------------------------------------------------------
 // Dirección y contabilidad
 // ---------------------------------------------------------------------
+
+function Solicitudes({ lista }: { lista: Solicitud[] }) {
+  return (
+    <section aria-labelledby="solicitudes">
+      <h2 id="solicitudes" className={`${titulo} mb-4`}>Solicitudes para extender un presupuesto</h2>
+      {lista.length === 0 ? (
+        <p className={`${tarjeta} px-6 py-6 text-ink-2`}>Ningún pedido espera tu decisión.</p>
+      ) : (
+        <ul className={`${tarjeta} divide-y divide-line`}>
+          {lista.map((s) => (
+            <li key={s.ordenId} className="flex flex-wrap items-center gap-x-6 gap-y-3 px-6 py-4">
+              <IconoAlerta className="size-5 shrink-0 text-warn" />
+              <div className="min-w-[15rem] flex-1">
+                <p className="text-lg font-semibold">{s.departamento} pide {money(s.faltaHoy)} más</p>
+                <p className={ayuda}>{s.detalle} · para el {fechaCorta(s.necesariaPara)} · pedido el {fecha(s.pedidoEn)}</p>
+              </div>
+              <Link href={`/solicitudes#solicitud-${s.ordenId}`} className={boton.primario}>
+                Resolver<IconoFlecha className="size-4" />
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
 
 /**
  * Los presupuestos que esperan a quien mira: a Dirección, los enviados; a
@@ -216,7 +335,7 @@ function MiPresupuesto({
 function ParaRevisar({ filas, revisores }: { filas: ResumenPresupuesto[]; revisores: Revisores }) {
   return (
     <section aria-labelledby="para-revisar">
-      <h2 id="para-revisar" className={`${titulo} mb-4`}>Para revisar</h2>
+      <h2 id="para-revisar" className={`${titulo} mb-4`}>Presupuestos para revisar</h2>
       {filas.length === 0 ? (
         <p className={`${tarjeta} px-6 py-6 text-ink-2`}>
           No tienes presupuestos esperando tu revisión.
@@ -247,45 +366,29 @@ function ParaRevisar({ filas, revisores }: { filas: ResumenPresupuesto[]; reviso
   );
 }
 
-/** Para contabilidad: las tres órdenes de compra del año que se formula. */
-function TarjetaOrdenes({ anio, filas, departamentos }: { anio: number; filas: FilaPeriodos[]; departamentos: number }) {
-  const porPeriodo = PERIODOS.map((p) => filas.reduce((s, f) => s + f.periodos[p.numero - 1], 0));
-  const total = porPeriodo.reduce((s, x) => s + x, 0);
+/** Para contabilidad: lo que se necesitará cada mes del año que se formula. */
+function TarjetaProyeccion({ anio, filas, departamentos }: { anio: number; filas: FilaProyeccion[]; departamentos: number }) {
+  const total = filas.reduce((s, f) => s + f.total, 0);
   return (
-    <section aria-labelledby="ordenes" className={`${tarjeta} p-6`}>
+    <section aria-labelledby="proyeccion" className={`${tarjeta} p-6`}>
       <div className="flex flex-wrap items-start gap-x-6 gap-y-4">
         <div className="min-w-[15rem] flex-1">
-          <h2 id="ordenes" className={titulo}>Órdenes de compra {anio}</h2>
+          <h2 id="proyeccion" className={titulo}>Proyección mensual {anio}</h2>
           <p className="mt-1 text-ink-2">
             {filas.length === 0
-              ? 'Todavía no hay presupuestos aprobados. Cada uno que apruebes entra a las órdenes de sus periodos.'
-              : `${filas.length} de ${departamentos} departamentos aprobados · ${money(total)} en el año`}
+              ? 'Todavía no hay presupuestos aprobados. Cada uno que apruebes suma sus meses a la proyección.'
+              : `${filas.length} de ${departamentos} departamentos aprobados · ${money(total)} en el año, mes a mes`}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Link href="/ordenes-de-compra" className={boton.primario}>Ver las órdenes<IconoFlecha className="size-4" /></Link>
+          <Link href="/proyeccion" className={boton.primario}>Ver la proyección<IconoFlecha className="size-4" /></Link>
           {filas.length > 0 && (
-            <a href="/ordenes-de-compra/exportar" download className={boton.secundario}>
-              <IconoDescarga className="size-4" />Descargar resumen
+            <a href="/proyeccion/exportar" download className={boton.secundario}>
+              <IconoDescarga className="size-4" />Descargar
             </a>
           )}
         </div>
       </div>
-      {filas.length > 0 && (
-        <ul className="mt-5 grid gap-3 sm:grid-cols-3" aria-label="Total de cada orden de compra">
-          {PERIODOS.map((p, i) => (
-            <li key={p.numero}>
-              <Link href={`/ordenes-de-compra?periodo=${p.numero}`}
-                className="block h-full rounded-xl border border-line px-4 py-3 transition-colors hover:border-accent hover:bg-accent-soft/40">
-                <span className="block text-sm font-semibold text-ink">
-                  {p.nombre} <span className="font-normal text-ink-2">· {p.meses}</span>
-                </span>
-                <span className="mt-0.5 block text-xl font-semibold">{money(porPeriodo[i])}</span>
-              </Link>
-            </li>
-          ))}
-        </ul>
-      )}
     </section>
   );
 }
@@ -302,124 +405,32 @@ function EstadoFormulacion({ filas, anio }: { filas: ResumenPresupuesto[]; anio:
   );
 }
 
-function PendientesDireccion({ pendientes }: { pendientes: Awaited<ReturnType<typeof pendientesDeDireccion>> }) {
-  return (
-    <section aria-labelledby="pendientes">
-      <h2 id="pendientes" className={`${titulo} mb-1`}>Pendientes de pedido</h2>
-      <p className={`${ayuda} mb-4`}>
-        Órdenes que no cupieron en el disponible de su departamento. Se resolverán desde la etapa 2, que viene después.
-      </p>
-      <div className={`${tarjeta} divide-y divide-line`}>
-        {pendientes.map((p) => (
-          <div key={p.id} className="flex flex-wrap items-start gap-3 px-6 py-4">
-            <IconoAlerta className="mt-0.5 size-5 text-warn" />
-            <div className="min-w-0 flex-1">
-              <p className="font-semibold">{p.departamento} · <span className="font-normal text-ink-2">orden {p.folio}</span></p>
-              {p.observacion && <p className="text-ink-2">{p.observacion}</p>}
-              <p className="mt-0.5 text-sm text-ink-2">Desde el {fecha(p.creadoEn)}</p>
-            </div>
-            <div className="text-right">
-              <p className="tabular font-semibold">{money(p.monto)}</p>
-              <p className="text-sm text-warn">excede en {money(p.excedido)}</p>
-            </div>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------------
-// Ejecución del año en curso
-// ---------------------------------------------------------------------
-
 function Ejecucion({ sesion, saldos, anio }: { sesion: Sesion; saldos: SaldoDepartamento[]; anio: number }) {
   const total = totalizar(saldos);
   const usado = pct(total.comprometido + total.ejecutado, total.vigente);
-  const verReal = esContabilidad(sesion) || esDireccion(sesion);
-
-  const titular = sesion.veTodoElColegio
-    ? `Presupuesto ${anio} en curso`
-    : `Presupuesto ${anio} en curso · ${saldos.map((s) => s.departamento).join(' y ') || 'sin departamento'}`;
 
   return (
     <section aria-labelledby="ejecucion">
-      <div className="mb-4">
-        <h2 id="ejecucion" className={titulo}>{titular}</h2>
-        <p className={`${ayuda} mt-1`}>
-          Lo que queda: el presupuesto vigente, menos lo comprometido (órdenes por comprar) y lo ejecutado (ya comprado).
-        </p>
+      <div className="mb-4 flex flex-wrap items-baseline gap-x-4 gap-y-1">
+        <h2 id="ejecucion" className={titulo}>Presupuesto {anio} en curso</h2>
+        <Link href="/ejecucion" className="text-[15px] font-medium text-accent hover:underline">Ver cada departamento y el mes a mes</Link>
       </div>
-
-      <div className="mb-4 grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
+      <div className="mb-3 grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
         <TarjetaCifra titulo="Presupuesto vigente" valor={money(total.vigente)}
-          nota={total.modificaciones ? `incluye ${money(total.modificaciones)} en modificaciones` : 'sin modificaciones'} />
-        <TarjetaCifra titulo="Comprometido" valor={money(total.comprometido)} nota="órdenes emitidas, por comprar" />
-        <TarjetaCifra titulo="Ejecutado" valor={money(total.ejecutado)} nota="órdenes compradas o recibidas" />
+          nota={total.modificaciones ? `incluye ${money(total.modificaciones)} en extensiones` : 'sin extensiones'} />
+        <TarjetaCifra titulo="Por comprar" valor={money(total.comprometido)} nota="en la lista del equipo de compra" />
+        <TarjetaCifra titulo="Comprado" valor={money(total.ejecutado)} nota="a precio presupuesto" />
         <TarjetaCifra titulo="Disponible" valor={money(total.disponible)} nota={`${usado}% del presupuesto usado`}
           tono={total.disponible < 0 ? 'bad' : 'normal'} />
-        {verReal && (
+        {veGastoReal(sesion) && (
           <TarjetaCifra titulo="Gasto real" valor={money(total.gastoReal)}
-            nota={total.desviacion === 0 ? 'igual a lo presupuestado'
-              : `${money(Math.abs(total.desviacion))} ${total.desviacion > 0 ? 'sobre' : 'bajo'} lo presupuestado`} />
+            nota={total.desviacion === 0 ? 'igual a lo presupuestado' : `${conSigno(total.desviacion)} sobre lo presupuestado`} />
         )}
       </div>
-
-      <div className={`${tarjeta} mb-4 p-5`}>
+      <div className={`${tarjeta} p-5`}>
         <BarraSaldo {...total} />
         <Leyenda />
       </div>
-
-      {saldos.length > 1 && (
-        <div className={`${tarjeta} overflow-hidden`}>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[820px] border-collapse">
-              <thead>
-                <tr className="bg-surface-2">
-                  <th className={th}>Departamento</th>
-                  <th className={`${th} text-right`}>Vigente</th>
-                  <th className={`${th} text-right`}>Comprometido</th>
-                  <th className={`${th} text-right`}>Ejecutado</th>
-                  <th className={`${th} text-right`}>Disponible</th>
-                  {verReal && <th className={`${th} text-right`}>Desviación</th>}
-                  <th className={th}>Avance</th>
-                </tr>
-              </thead>
-              <tbody>
-                {saldos.map((s) => (
-                  <tr key={s.departamentoId}>
-                    <td className={td}>
-                      <span className="font-medium">{s.departamento}</span>
-                      {s.pendientes > 0 && (
-                        <span className="ml-2 inline-flex items-center gap-1 text-sm text-warn">
-                          <IconoAlerta className="size-4" />{s.pendientes} pendiente
-                        </span>
-                      )}
-                    </td>
-                    <td className={tdNum}>{money(s.vigente)}</td>
-                    <td className={tdNum}>{money(s.comprometido)}</td>
-                    <td className={tdNum}>{money(s.ejecutado)}</td>
-                    <td className={`${tdNum} ${s.disponible < 0 ? 'text-bad' : ''}`}>{money(s.disponible)}</td>
-                    {verReal && (
-                      <td className={`${tdNum} text-ink-2`}>
-                        {s.desviacion === 0 ? '—' : `${s.desviacion > 0 ? '+' : '−'}${money(Math.abs(s.desviacion))}`}
-                      </td>
-                    )}
-                    <td className={td}>
-                      <div className="min-w-[120px]">
-                        <BarraSaldo {...s} />
-                        <span className="mt-1 block text-[13px] text-ink-2">
-                          {pct(s.comprometido + s.ejecutado, s.vigente)}% usado
-                        </span>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
     </section>
   );
 }
