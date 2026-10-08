@@ -45,3 +45,6 @@ next-env.d.ts
 
 # la plantilla de variables sí va al repositorio
 !.env.example
+
+# capturas para las presentaciones (no son código)
+/Claude outputs/

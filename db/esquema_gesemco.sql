@@ -38,6 +38,15 @@
 
 BEGIN;
 
+-- La base vive en la hora de Chile. Las bases en la nube vienen en UTC y
+-- ahí CURRENT_DATE (fechas por defecto, roles vigentes) saltaría al día
+-- siguiente en la noche. Rige para las conexiones que se abran después.
+DO $$
+BEGIN
+    EXECUTE format('ALTER DATABASE %I SET timezone = %L', current_database(), 'America/Santiago');
+END
+$$;
+
 -- ---------------------------------------------------------------------
 -- 0. Tipos enumerados
 -- ---------------------------------------------------------------------
